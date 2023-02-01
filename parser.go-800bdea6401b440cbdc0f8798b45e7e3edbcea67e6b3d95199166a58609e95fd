@@ -1,0 +1,249 @@
+// PUBLISH-CODE
+/*
+Copyright 2014 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This code is taken from github.com/kubernetes/apimachinery/pg/api/resource/quantity.go
+// and modified.
+
+package quantity
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"math/big"
+	"regexp"
+	"strings"
+
+	"github.com/ridge/must/v2"
+)
+
+//
+// Some notes:
+// - Empty value between `m` (milli) and `k` (kilo) is intentional: suffixless value.
+// - 1E is 10^18, but 1E1 is 10
+//
+
+var strRx = regexp.MustCompile(`^[+-]?(\d+(\.\d*)?|\.\d+)([KMGTPE]i|[mkMGTPE]|[Ee]\d+)?$`)
+
+// validate checks that the string is a valid quantity
+func validate(s string) error {
+	if !strRx.MatchString(s) {
+		return fmt.Errorf("quantity %q is malformed", s)
+	}
+	return nil
+}
+
+// MustValid is a helper that ensures that the string quantity is syntactically valid.
+//
+// Handy for Kubernetes object literals
+func MustValid(s string) string {
+	must.OK(validate(s))
+	return s
+}
+
+const (
+	// splitREString is used to separate a number from its suffix; as such,
+	// this is overly permissive, but that's OK-- it will be checked later.
+	splitREString = "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$"
+)
+
+var (
+	errFormatWrong = errors.New("quantities must match the regular expression '" + splitREString + "'")
+	errNumeric     = errors.New("unable to parse numeric part of quantity")
+	errSuffix      = errors.New("unable to parse quantity's suffix")
+)
+
+var (
+	big1  = big.NewInt(1)
+	big10 = big.NewInt(10)
+)
+
+// parse turns str into a int64, or returns an error.
+// from https://github.com/kubernetes/apimachinery, pkg/api/resource/quantity.go
+func parse(quantity string, outputScale int32) (int64, error) {
+	if len(quantity) == 0 {
+		return 0, errFormatWrong
+	}
+
+	integer, decimal, suf, err := parseString(quantity)
+	if err != nil {
+		return 0, err
+	}
+
+	base, exponent, err := parseSuffix(suf)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", errSuffix, err)
+	}
+
+	shiftedNum, ok := new(big.Int).SetString(integer+decimal, 10)
+	if !ok {
+		return 0, errNumeric
+	}
+
+	scale := -int32(len(decimal)) // because we shifted the number by the size of its decimal
+	scale -= outputScale
+
+	var res *big.Int
+	switch base {
+	case 2:
+		switch {
+		case exponent > 0:
+			res = shiftedNum.Lsh(shiftedNum, uint(exponent))
+		case exponent < 0:
+			res = shiftedNum.Rsh(shiftedNum, uint(-exponent))
+		}
+		if scale != 0 {
+			res = base10Exp(res, scale)
+		}
+	case 10:
+		res = base10Exp(shiftedNum, exponent+scale)
+	}
+
+	if !res.IsInt64() {
+		if res.Sign() == -1 {
+			return math.MinInt64, nil
+		}
+		return math.MaxInt64, nil
+	}
+	return res.Int64(), nil
+}
+
+func base10Exp(value *big.Int, exponent int32) *big.Int {
+	switch {
+	case exponent == 0:
+		return value
+	case exponent > 0:
+		power := big.NewInt(int64(exponent))
+		powerOf10 := power.Exp(big10, power, nil)
+		return value.Mul(value, powerOf10)
+	default: // exponent < 0
+		power := big.NewInt(int64(-exponent))
+		powerOf10 := power.Exp(big10, power, nil)
+		res, remainder := value.DivMod(value, powerOf10, powerOf10)
+		if remainder.Sign() == 0 {
+			return res
+		}
+		return res.Add(res, big1)
+	}
+}
+
+// parseString is a fast scanner for quantity values.
+// from https://github.com/kubernetes/apimachinery, pkg/api/resource/quantity.go
+func parseString(str string) (integer, decimal, suffix string, err error) {
+	pos := 0
+	end := len(str)
+
+	// handle leading sign
+	if pos < end {
+		switch str[0] {
+		case '-':
+			pos++
+		case '+':
+			pos++
+		}
+	}
+
+	// strip leading zeros
+Zeroes:
+	for i := pos; ; i++ {
+		if i >= end {
+			integer = "0"
+			return
+		}
+		switch str[i] {
+		case '0':
+			pos++
+		default:
+			break Zeroes
+		}
+	}
+
+	// extract the numerator
+Num:
+	for i := pos; ; i++ {
+		if i >= end {
+			integer = str[pos:end]
+			return
+		}
+		switch str[i] {
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		default:
+			integer = str[pos:i]
+			pos = i
+			break Num
+		}
+	}
+
+	// if we stripped all numerator positions, always return 0
+	if len(integer) == 0 {
+		integer = "0"
+	}
+
+	// handle a denominator
+	if pos < end && str[pos] == '.' {
+		pos++
+	Denom:
+		for i := pos; ; i++ {
+			if i >= end {
+				decimal = str[pos:end]
+				return
+			}
+			switch str[i] {
+			case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			default:
+				decimal = str[pos:i]
+				pos = i
+				break Denom
+			}
+		}
+	}
+
+	// grab the elements of the suffix
+	suffixStart := pos
+	for i := pos; ; i++ {
+		if i >= end {
+			suffix = str[suffixStart:end]
+			return
+		}
+		if !strings.ContainsAny(str[i:i+1], "eEinumkKMGTP") {
+			pos = i
+			break
+		}
+	}
+	if pos < end {
+		switch str[pos] {
+		case '-', '+':
+			pos++
+		}
+	}
+Suffix:
+	for i := pos; ; i++ {
+		if i >= end {
+			suffix = str[suffixStart:end]
+			return
+		}
+		switch str[i] {
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		default:
+			break Suffix
+		}
+	}
+	// we encountered a non decimal in the Suffix loop, but the last character
+	// was not a valid exponent
+	err = errFormatWrong
+	return integer, decimal, suffix, err
+}

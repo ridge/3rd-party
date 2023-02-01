@@ -1,0 +1,47 @@
+// PUBLISH-CODE
+/*
+Copyright 2015 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This code is taken from github.com/kubernetes/kubernetes/pkg/scheduler/framework/v1alpha/types.go
+// and modified
+
+package quantity
+
+import (
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+)
+
+// ResourceIntValue returns the int64 value of a resource
+//
+// from Resource.Add
+func ResourceIntValue(resourceName core.ResourceName, quantity string) (int64, error) {
+	if err := validate(quantity); err != nil {
+		return 0, err
+	}
+
+	switch resourceName {
+	case core.ResourceCPU:
+		return parse(quantity, -3)
+	case core.ResourceMemory, core.ResourcePods, core.ResourceEphemeralStorage:
+		return parse(quantity, 0)
+	default:
+		// FIXME (alex): not implemented
+		// if schedutil.IsScalarResourceName(rName) {
+		//	r.AddScalar(rName, rQuant.Value())
+		// }
+	}
+	panic("resource \"" + resourceName + "\" not supported")
+}

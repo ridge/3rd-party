@@ -1,0 +1,360 @@
+// PUBLISH-CODE
+
+// Apache License, Version 2.0
+
+// This code is taken from github.com/weaveworks/weave/tree/prog/weave-kube
+// and extensively modified.
+
+package versions
+
+import (
+	"fmt"
+
+	apps "go.tectonic.network/lib/k8s/imp/api/apps/v1"
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+	rbac "go.tectonic.network/lib/k8s/imp/api/rbac/v1"
+	"go.tectonic.network/lib/k8s/intstr"
+	meta "go.tectonic.network/lib/k8s/meta/v1"
+	"go.tectonic.network/lib/k8s/quantity"
+	"go.tectonic.network/lib/ptr"
+)
+
+// Weave270 provides config for weave 2.7.0
+//
+// Taken from
+// https://github.com/weaveworks/weave/releases/download/v2.7.0/weave-daemonset-k8s-1.11.yaml,
+// converted to JSON, fed to k8s2go and massaged:
+//   - reformatted
+//   - replaced &"FileOrCreate" and &true with proper syntax
+//   - replaced resource.Quantity literals with resource.MustParse()
+//   - podsAddressRange, mastersCount arguments spliced into the proper places
+//   - image location changed to GCR one
+func Weave270(podsAddressRange string, mastersCount int) []any {
+	return []any{
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      "weave-net",
+				Namespace: "kube-system",
+				Labels: map[string]string{
+					"name": "weave-net",
+				},
+			},
+		},
+		&rbac.ClusterRole{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRole",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: "weave-net",
+				Labels: map[string]string{
+					"name": "weave-net",
+				},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs:     []string{"get", "list", "watch"},
+					APIGroups: []string{""},
+					Resources: []string{"pods", "namespaces", "nodes"},
+				},
+				{
+					Verbs:     []string{"get", "list", "watch"},
+					APIGroups: []string{"extensions"},
+					Resources: []string{"networkpolicies"},
+				},
+				{
+					Verbs:     []string{"get", "list", "watch"},
+					APIGroups: []string{"networking.k8s.io"},
+					Resources: []string{"networkpolicies"},
+				},
+				{
+					Verbs:     []string{"patch", "update"},
+					APIGroups: []string{""},
+					Resources: []string{"nodes/status"},
+				},
+			},
+		},
+		&rbac.ClusterRoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: "weave-net",
+				Labels: map[string]string{
+					"name": "weave-net",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      "weave-net",
+					Namespace: "kube-system",
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     "weave-net",
+			},
+		},
+		&rbac.Role{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Role",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      "weave-net",
+				Namespace: "kube-system",
+				Labels: map[string]string{
+					"name": "weave-net",
+				},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs:         []string{"get", "update"},
+					APIGroups:     []string{""},
+					Resources:     []string{"configmaps"},
+					ResourceNames: []string{"weave-net"},
+				},
+				{
+					Verbs:     []string{"create"},
+					APIGroups: []string{""},
+					Resources: []string{"configmaps"},
+				},
+			},
+		},
+		&rbac.RoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "RoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      "weave-net",
+				Namespace: "kube-system",
+				Labels: map[string]string{
+					"name": "weave-net",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      "weave-net",
+					Namespace: "kube-system",
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     "weave-net",
+			},
+		},
+		&apps.DaemonSet{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "DaemonSet",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      "weave-net",
+				Namespace: "kube-system",
+				Labels: map[string]string{
+					"name": "weave-net",
+				},
+			},
+			Spec: apps.DaemonSetSpec{
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"name": "weave-net",
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"name": "weave-net",
+						},
+					},
+					Spec: core.PodSpec{
+						Volumes: []core.Volume{
+							{
+								Name: "weavedb",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{Path: "/var/lib/weave"},
+								},
+							},
+							{
+								Name: "cni-bin",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{Path: "/opt"},
+								},
+							},
+							{
+								Name: "cni-bin2",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{Path: "/home"},
+								},
+							},
+							{
+								Name: "cni-conf",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{Path: "/etc"},
+								},
+							},
+							{
+								Name: "dbus",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{Path: "/var/lib/dbus"},
+								},
+							},
+							{
+								Name: "lib-modules",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{Path: "/lib/modules"},
+								},
+							},
+							{
+								Name: "xtables-lock",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{
+										Path: "/run/xtables.lock",
+										Type: &hostPathFileOrCreate,
+									},
+								},
+							},
+						},
+						Containers: []core.Container{
+							{
+								Name:  "weave",
+								Image: weaveKubeImages["2.7.0"].Tag,
+								Command: []string{
+									"/home/weave/launch.sh",
+								},
+								Env: []core.EnvVar{
+									{
+										Name: "HOSTNAME",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												APIVersion: "v1",
+												FieldPath:  "spec.nodeName",
+											},
+										},
+									},
+									{
+										Name:  "IPALLOC_RANGE",
+										Value: podsAddressRange,
+									},
+									{
+										Name:  "IPALLOC_INIT",
+										Value: fmt.Sprintf("consensus=%d", mastersCount),
+									},
+								},
+								Resources: core.ResourceRequirements{
+									Requests: core.ResourceList{
+										"cpu": quantity.MustValid("50m"),
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "weavedb",
+										MountPath: "/weavedb",
+									},
+									{
+										Name:      "cni-bin",
+										MountPath: "/host/opt",
+									},
+									{
+										Name:      "cni-bin2",
+										MountPath: "/host/home",
+									},
+									{
+										Name:      "cni-conf",
+										MountPath: "/host/etc",
+									},
+									{
+										Name:      "dbus",
+										MountPath: "/host/var/lib/dbus",
+									},
+									{
+										Name:      "lib-modules",
+										MountPath: "/lib/modules",
+									},
+									{
+										Name:      "xtables-lock",
+										MountPath: "/run/xtables.lock",
+									},
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/status",
+											Port: intstr.Int(6784),
+											Host: "127.0.0.1",
+										},
+									},
+								},
+								SecurityContext: &core.SecurityContext{
+									Privileged: ptr.Alloc(true),
+								},
+							},
+							{
+								Name:  "weave-npc",
+								Image: weaveNPCImages["2.7.0"].Tag,
+								Env: []core.EnvVar{
+									{
+										Name: "HOSTNAME",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												APIVersion: "v1",
+												FieldPath:  "spec.nodeName",
+											},
+										},
+									},
+								},
+								Resources: core.ResourceRequirements{
+									Requests: core.ResourceList{
+										"cpu": quantity.MustValid("50m"),
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "xtables-lock",
+										MountPath: "/run/xtables.lock",
+									},
+								},
+								SecurityContext: &core.SecurityContext{
+									Privileged: ptr.Alloc(true),
+								},
+							},
+						},
+						RestartPolicy:      "Always",
+						DNSPolicy:          "ClusterFirstWithHostNet",
+						ServiceAccountName: "weave-net",
+						HostNetwork:        true,
+						HostPID:            true,
+						SecurityContext: &core.PodSecurityContext{
+							SELinuxOptions: &core.SELinuxOptions{},
+						},
+						Tolerations: []core.Toleration{
+							{
+								Operator: "Exists",
+								Effect:   "NoSchedule",
+							},
+							{
+								Operator: "Exists",
+								Effect:   "NoExecute",
+							},
+						},
+						PriorityClassName: "system-node-critical",
+					},
+				},
+				UpdateStrategy: apps.DaemonSetUpdateStrategy{
+					Type: "RollingUpdate",
+				},
+				MinReadySeconds: 5,
+			},
+		},
+	}
+}

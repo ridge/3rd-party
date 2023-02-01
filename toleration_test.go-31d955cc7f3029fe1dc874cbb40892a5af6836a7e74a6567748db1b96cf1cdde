@@ -1,0 +1,252 @@
+// PUBLISH-CODE
+/*
+Copyright 2017 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This code is taken from github.com/kubernetes and modified
+
+package toleration
+
+import (
+	"testing"
+
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+)
+
+// from api/core/v1/toleration_test.go
+
+func TestTolerationToleratesTaint(t *testing.T) {
+	testCases := []struct {
+		description     string
+		toleration      core.Toleration
+		taint           core.Taint
+		expectTolerated bool
+	}{
+		{
+			description: "toleration and taint have the same key and effect, and operator is Exists, and taint has no value, expect tolerated",
+			toleration: core.Toleration{
+				Key:      "foo",
+				Operator: core.TolerationOpExists,
+				Effect:   core.TaintEffectNoSchedule,
+			},
+			taint: core.Taint{
+				Key:    "foo",
+				Effect: core.TaintEffectNoSchedule,
+			},
+			expectTolerated: true,
+		},
+		{
+			description: "toleration and taint have the same key and effect, and operator is Exists, and taint has some value, expect tolerated",
+			toleration: core.Toleration{
+				Key:      "foo",
+				Operator: core.TolerationOpExists,
+				Effect:   core.TaintEffectNoSchedule,
+			},
+			taint: core.Taint{
+				Key:    "foo",
+				Value:  "bar",
+				Effect: core.TaintEffectNoSchedule,
+			},
+			expectTolerated: true,
+		},
+		{
+			description: "toleration and taint have the same effect, toleration has empty key and operator is Exists, means match all taints, expect tolerated",
+			toleration: core.Toleration{
+				Key:      "",
+				Operator: core.TolerationOpExists,
+				Effect:   core.TaintEffectNoSchedule,
+			},
+			taint: core.Taint{
+				Key:    "foo",
+				Value:  "bar",
+				Effect: core.TaintEffectNoSchedule,
+			},
+			expectTolerated: true,
+		},
+		{
+			description: "toleration and taint have the same key, effect and value, and operator is Equal, expect tolerated",
+			toleration: core.Toleration{
+				Key:      "foo",
+				Operator: core.TolerationOpEqual,
+				Value:    "bar",
+				Effect:   core.TaintEffectNoSchedule,
+			},
+			taint: core.Taint{
+				Key:    "foo",
+				Value:  "bar",
+				Effect: core.TaintEffectNoSchedule,
+			},
+			expectTolerated: true,
+		},
+		{
+			description: "toleration and taint have the same key and effect, but different values, and operator is Equal, expect not tolerated",
+			toleration: core.Toleration{
+				Key:      "foo",
+				Operator: core.TolerationOpEqual,
+				Value:    "value1",
+				Effect:   core.TaintEffectNoSchedule,
+			},
+			taint: core.Taint{
+				Key:    "foo",
+				Value:  "value2",
+				Effect: core.TaintEffectNoSchedule,
+			},
+			expectTolerated: false,
+		},
+		{
+			description: "toleration and taint have the same key and value, but different effects, and operator is Equal, expect not tolerated",
+			toleration: core.Toleration{
+				Key:      "foo",
+				Operator: core.TolerationOpEqual,
+				Value:    "bar",
+				Effect:   core.TaintEffectNoSchedule,
+			},
+			taint: core.Taint{
+				Key:    "foo",
+				Value:  "bar",
+				Effect: core.TaintEffectNoExecute,
+			},
+			expectTolerated: false,
+		},
+	}
+	for _, tc := range testCases {
+		if tolerated := ToleratesTaint(tc.toleration, &tc.taint); tc.expectTolerated != tolerated {
+			t.Errorf("[%s] expect %v, got %v: toleration %+v, taint %s", tc.description, tc.expectTolerated, tolerated, tc.toleration, tc.taint)
+		}
+	}
+}
+
+// from component-helpers/scheduling/corev1/helpers_test.go
+
+func TestFindMatchingUntoleratedTaint(t *testing.T) {
+	testCases := []struct {
+		description     string
+		tolerations     []core.Toleration
+		taints          []core.Taint
+		applyFilter     taintsFilterFunc
+		expectTolerated bool
+	}{
+		{
+			description:     "empty tolerations tolerate empty taints",
+			tolerations:     []core.Toleration{},
+			taints:          []core.Taint{},
+			applyFilter:     func(t *core.Taint) bool { return true },
+			expectTolerated: true,
+		},
+		{
+			description: "non-empty tolerations tolerate empty taints",
+			tolerations: []core.Toleration{
+				{
+					Key:      "foo",
+					Operator: "Exists",
+					Effect:   core.TaintEffectNoSchedule,
+				},
+			},
+			taints:          []core.Taint{},
+			applyFilter:     func(t *core.Taint) bool { return true },
+			expectTolerated: true,
+		},
+		{
+			description: "tolerations match all taints, expect tolerated",
+			tolerations: []core.Toleration{
+				{
+					Key:      "foo",
+					Operator: "Exists",
+					Effect:   core.TaintEffectNoSchedule,
+				},
+			},
+			taints: []core.Taint{
+				{
+					Key:    "foo",
+					Effect: core.TaintEffectNoSchedule,
+				},
+			},
+			applyFilter:     func(t *core.Taint) bool { return true },
+			expectTolerated: true,
+		},
+		{
+			description: "tolerations don't match taints, but no taints apply to the filter, expect tolerated",
+			tolerations: []core.Toleration{
+				{
+					Key:      "foo",
+					Operator: "Exists",
+					Effect:   core.TaintEffectNoSchedule,
+				},
+			},
+			taints: []core.Taint{
+				{
+					Key:    "bar",
+					Effect: core.TaintEffectNoSchedule,
+				},
+			},
+			applyFilter:     func(t *core.Taint) bool { return false },
+			expectTolerated: true,
+		},
+		{
+			description: "no filterFunc indicated, means all taints apply to the filter, tolerations don't match taints, expect untolerated",
+			tolerations: []core.Toleration{
+				{
+					Key:      "foo",
+					Operator: "Exists",
+					Effect:   core.TaintEffectNoSchedule,
+				},
+			},
+			taints: []core.Taint{
+				{
+					Key:    "bar",
+					Effect: core.TaintEffectNoSchedule,
+				},
+			},
+			applyFilter:     nil,
+			expectTolerated: false,
+		},
+		{
+			description: "tolerations match taints, expect tolerated",
+			tolerations: []core.Toleration{
+				{
+					Key:      "foo",
+					Operator: "Exists",
+					Effect:   core.TaintEffectNoExecute,
+				},
+			},
+			taints: []core.Taint{
+				{
+					Key:    "foo",
+					Effect: core.TaintEffectNoExecute,
+				},
+				{
+					Key:    "bar",
+					Effect: core.TaintEffectNoSchedule,
+				},
+			},
+			applyFilter:     func(t *core.Taint) bool { return t.Effect == core.TaintEffectNoExecute },
+			expectTolerated: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		_, untolerated := FindMatchingUntoleratedTaint(tc.taints, tc.tolerations, tc.applyFilter)
+		if tc.expectTolerated != !untolerated {
+			filteredTaints := []core.Taint{}
+			for _, taint := range tc.taints {
+				if tc.applyFilter != nil && !tc.applyFilter(&taint) {
+					continue
+				}
+				filteredTaints = append(filteredTaints, taint)
+			}
+			t.Errorf("[%s] expect tolerations %+v tolerate filtered taints %+v in taints %+v", tc.description, tc.tolerations, filteredTaints, tc.taints)
+		}
+	}
+}

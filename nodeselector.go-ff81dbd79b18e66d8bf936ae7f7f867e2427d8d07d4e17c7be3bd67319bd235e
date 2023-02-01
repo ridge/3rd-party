@@ -1,0 +1,133 @@
+// PUBLISH-CODE
+/*
+Copyright 2020 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package selector
+
+import (
+	"fmt"
+
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+	metav1 "go.tectonic.network/lib/k8s/meta/v1"
+)
+
+// The code is taken from github.com/kubernetes/component-helpers/scheduling/corev1/nodeaffinity
+// and modified.
+
+// PodMatchesNodeAffinity checks whether the node labels and fields match the node selector, nil or empty term matches no objects.
+//
+// from GetRequiredNodeAffinity
+func PodMatchesNodeAffinity(pod *core.Pod, node *core.Node) (bool, error) {
+	if node == nil {
+		return false, nil
+	}
+
+	for label, value := range pod.Spec.NodeSelector {
+		match, err := selectorMatchesLabels(label, equals, []string{value}, node.Labels)
+		if err != nil {
+			return false, err
+		}
+		if !match {
+			return false, nil
+		}
+	}
+
+	if pod.Spec.Affinity != nil &&
+		pod.Spec.Affinity.NodeAffinity != nil &&
+		pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		return nodeSelectorsMatchesNodeAffinity(*pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution, node)
+	}
+
+	return true, nil
+}
+
+// from LazyErrorNodeSelector.Match
+func nodeSelectorsMatchesNodeAffinity(nodeSelector core.NodeSelector, node *core.Node) (bool, error) {
+	if node == nil {
+		return false, nil
+	}
+
+	nodeFields := map[string]string{}
+	if len(node.Name) > 0 {
+		nodeFields[metav1.ObjectNameField] = node.Name
+	}
+
+	for _, term := range nodeSelector.NodeSelectorTerms {
+		if len(term.MatchExpressions) == 0 && len(term.MatchFields) == 0 { // empty node selector
+			continue
+		}
+		match, err := nodeSelectorTermMatchesNodeAffinity(term, node.Labels, nodeFields)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// from newNodeSelectorTerm
+func nodeSelectorTermMatchesNodeAffinity(nodeSelectorTerm core.NodeSelectorTerm, nodeLabels, nodeFields map[string]string) (bool, error) {
+	// from nodeSelectorRequirementsAsSelector
+	for _, term := range nodeSelectorTerm.MatchExpressions {
+		var op operator
+		switch term.Operator {
+		case core.NodeSelectorOpIn:
+			op = in
+		case core.NodeSelectorOpNotIn:
+			op = notIn
+		case core.NodeSelectorOpExists:
+			op = exists
+		case core.NodeSelectorOpDoesNotExist:
+			op = doesNotExist
+		case core.NodeSelectorOpGt:
+			op = greaterThan
+		case core.NodeSelectorOpLt:
+			op = lessThan
+		default:
+			return false, fmt.Errorf("%q is not a valid node selector operator", term.Operator)
+		}
+
+		if match, err := selectorMatchesLabels(term.Key, op, term.Values, nodeLabels); !match {
+			return false, err
+		}
+	}
+
+	// from nodeSelectorRequirementsAsFieldSelector
+	for _, term := range nodeSelectorTerm.MatchFields {
+		switch term.Operator {
+		case core.NodeSelectorOpIn:
+			if len(term.Values) != 1 {
+				return false, fmt.Errorf("invalid value %v: must have one element", term.Values)
+			}
+			if nodeFields[term.Key] != term.Values[0] {
+				return false, nil
+			}
+		case core.NodeSelectorOpNotIn:
+			if len(term.Values) != 1 {
+				return false, fmt.Errorf("invalid value %v: must have one element", term.Values)
+			}
+			if nodeFields[term.Key] == term.Values[0] {
+				return false, nil
+			}
+		default:
+			return false, fmt.Errorf("operator %s not supported", term.Operator)
+		}
+	}
+
+	return true, nil
+}

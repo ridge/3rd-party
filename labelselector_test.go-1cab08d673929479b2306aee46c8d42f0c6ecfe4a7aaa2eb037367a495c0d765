@@ -1,0 +1,224 @@
+// PUBLISH-CODE
+/*
+Copyright 2016 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This code is taken from github.com/kubernetes/apimachinery/pkg/apis/meta/v1/helpers_test.go,
+// pkg/labels/selector_test.go and modified.
+
+package selector
+
+import (
+	"testing"
+
+	meta "go.tectonic.network/lib/k8s/meta/v1"
+)
+
+// from pkg/apis/meta/v1/helpers_test.go, TestLabelSelectorAsSelector
+func TestLabelSelectorMatch(t *testing.T) {
+	matchLabels := map[string]string{"foo": "bar"}
+	matchExpressions := []meta.LabelSelectorRequirement{{
+		Key:      "baz",
+		Operator: meta.LabelSelectorOpIn,
+		Values:   []string{"qux", "norf"},
+	}}
+	tc := []struct {
+		name        string
+		selector    *meta.LabelSelector
+		labels      map[string]string
+		expectMatch bool
+	}{
+		{name: "nil selector", selector: nil, expectMatch: false},
+		{name: "empty selector", selector: &meta.LabelSelector{}, expectMatch: true},
+		{
+			name:        "selector with MatchLabels only - expects match",
+			selector:    &meta.LabelSelector{MatchLabels: matchLabels},
+			labels:      map[string]string{"foo": "bar"},
+			expectMatch: true,
+		},
+		{
+			name:     "selector with MatchLabels only - expects no match",
+			selector: &meta.LabelSelector{MatchLabels: matchLabels},
+			labels:   map[string]string{"foo": "foo"},
+		},
+		{
+			name:        "selector with MatchExpressions only - expect match",
+			selector:    &meta.LabelSelector{MatchExpressions: matchExpressions},
+			labels:      map[string]string{"baz": "norf"},
+			expectMatch: true,
+		},
+		{
+			name:     "selector with MatchExpressions only - expect no match",
+			selector: &meta.LabelSelector{MatchExpressions: matchExpressions},
+			labels:   map[string]string{"baz": "baz"},
+		},
+		{
+			name:        "selector with MatchLabels and MatchExpressions - expect match",
+			selector:    &meta.LabelSelector{MatchLabels: matchLabels, MatchExpressions: matchExpressions},
+			labels:      map[string]string{"foo": "bar", "baz": "norf"},
+			expectMatch: true,
+		},
+		{
+			name:     "selector with MatchLabels and MatchExpressions - matches MatchLabels only",
+			selector: &meta.LabelSelector{MatchLabels: matchLabels, MatchExpressions: matchExpressions},
+			labels:   map[string]string{"foo": "bar"},
+		},
+		{
+			name:     "selector with MatchLabels and MatchExpressions - matches MatchExpressions only",
+			selector: &meta.LabelSelector{MatchLabels: matchLabels, MatchExpressions: matchExpressions},
+			labels:   map[string]string{"baz": "norf"},
+		},
+	}
+
+	for i, tc := range tc {
+		t.Run(tc.name, func(t *testing.T) {
+			match, err := labelSelectorMatchesLabel(tc.selector, tc.labels)
+			if err != nil {
+				t.Errorf("[%v]did not expect error but got: %v", i, err)
+			}
+			if match != tc.expectMatch {
+				t.Errorf("%+v.Matches(%#v) => %v, want %v", tc.selector, tc.labels, match, tc.expectMatch)
+			}
+		})
+	}
+}
+
+// from pkg/labels/selector_test.go, TestRequirementSelectorMatching
+func TestLabelSelectorMatchMatchExpression(t *testing.T) {
+	tc := []struct {
+		name        string
+		selector    *meta.LabelSelector
+		labels      map[string]string
+		expectMatch bool
+	}{
+		{
+			name:   "selector with two labels - expect match",
+			labels: map[string]string{"x": "foo", "y": "baz"},
+			selector: &meta.LabelSelector{
+				MatchExpressions: []meta.LabelSelectorRequirement{
+					{
+						Key:      "x",
+						Operator: meta.LabelSelectorOpIn,
+						Values:   []string{"foo"},
+					},
+					{
+						Key:      "y",
+						Operator: meta.LabelSelectorOpNotIn,
+						Values:   []string{"alpha"},
+					},
+				},
+			},
+			expectMatch: true,
+		},
+		{
+			name:   "selector with two labels - expect no match",
+			labels: map[string]string{"x": "foo", "y": "baz"},
+			selector: &meta.LabelSelector{
+				MatchExpressions: []meta.LabelSelectorRequirement{
+					{
+						Key:      "x",
+						Operator: meta.LabelSelectorOpIn,
+						Values:   []string{"foo"},
+					},
+					{
+						Key:      "y",
+						Operator: meta.LabelSelectorOpIn,
+						Values:   []string{"alpha"},
+					},
+				},
+			},
+		},
+		{
+			name:   "selector with a label with no value-  x in empty set, y exists - expect match",
+			labels: map[string]string{"y": ""},
+			selector: &meta.LabelSelector{
+				MatchExpressions: []meta.LabelSelectorRequirement{
+					{
+						Key:      "x",
+						Operator: meta.LabelSelectorOpNotIn,
+						Values:   []string{""},
+					},
+					{
+						Key:      "y",
+						Operator: meta.LabelSelectorOpExists,
+					},
+				},
+			},
+			expectMatch: true,
+		},
+		{
+			name:   "selector with a label with no value - x not exists, y exists - expect match",
+			labels: map[string]string{"y": ""},
+			selector: &meta.LabelSelector{
+				MatchExpressions: []meta.LabelSelectorRequirement{
+					{
+						Key:      "x",
+						Operator: meta.LabelSelectorOpDoesNotExist,
+					},
+					{
+						Key:      "y",
+						Operator: meta.LabelSelectorOpExists,
+					},
+				},
+			},
+			expectMatch: true,
+		},
+		{
+			name:   "selector with a label with no value - x in empty set, y not exists - expect no match",
+			labels: map[string]string{"y": ""},
+			selector: &meta.LabelSelector{
+				MatchExpressions: []meta.LabelSelectorRequirement{
+					{
+						Key:      "x",
+						Operator: meta.LabelSelectorOpNotIn,
+						Values:   []string{""},
+					},
+					{
+						Key:      "y",
+						Operator: meta.LabelSelectorOpDoesNotExist,
+					},
+				},
+			},
+		},
+		{
+			name:   "selector with a label with value - x in empty set - expect no match",
+			labels: map[string]string{"y": "baz"},
+			selector: &meta.LabelSelector{
+				MatchExpressions: []meta.LabelSelectorRequirement{
+					{
+						Key:      "x",
+						Operator: meta.LabelSelectorOpIn,
+						Values:   []string{""},
+					},
+					{
+						Key:      "y",
+						Operator: meta.LabelSelectorOpDoesNotExist,
+					},
+				},
+			},
+		},
+	}
+	for i, tc := range tc {
+		t.Run(tc.name, func(t *testing.T) {
+			match, err := labelSelectorMatchesLabel(tc.selector, tc.labels)
+			if err != nil {
+				t.Errorf("[%v]did not expect error but got: %v", i, err)
+			}
+			if match != tc.expectMatch {
+				t.Errorf("%+v.Matches(%#v) => %v, want %v", tc.selector, tc.labels, match, tc.expectMatch)
+			}
+		})
+	}
+}

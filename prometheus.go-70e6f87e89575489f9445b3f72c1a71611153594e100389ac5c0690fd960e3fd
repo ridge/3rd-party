@@ -1,0 +1,1483 @@
+// PUBLISH-CODE
+
+// Apache License, Version 2.0.
+
+// This code is taken from github.com/prometheus-community/helm-charts and extensively modified.
+
+package marketplaceapps
+
+import (
+	"fmt"
+
+	apps "go.tectonic.network/lib/k8s/imp/api/apps/v1"
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+	rbac "go.tectonic.network/lib/k8s/imp/api/rbac/v1"
+	"go.tectonic.network/lib/k8s/intstr"
+	meta "go.tectonic.network/lib/k8s/meta/v1"
+	"go.tectonic.network/lib/ptr"
+)
+
+var prometheusInstructions = func(name, namespace string) string {
+	selector1 := fmt.Sprintf("app=prometheus,instance=%s", name)
+	selector2 := fmt.Sprintf("app.kubernetes.io/name=kube-state-metrics,app.kubernetes.io/instance=%s", name)
+	serviceName := fmt.Sprintf("%s-prometheus-server", name)
+	return fmt.Sprintf(`The app is ready to use when all pods returned by "kubectl get pods -n %s --selector %s" and "kubectl get pods -n %s --selector %s" are in state "Running".
+The UI is exposed by the service %q, in namespace %q. Use its ClusterIP ip to use it as a data source in Grafana.`, namespace, selector1, namespace, selector2, serviceName, namespace)
+}
+
+var prometheusConfig = func(name, namespace string) []any {
+	return []any{
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-kube-state-metrics",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "metrics",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "kube-state-metrics",
+					"app.kubernetes.io/part-of":   "kube-state-metrics",
+					"app.kubernetes.io/version":   "2.4.1",
+				},
+			},
+			ImagePullSecrets: []core.LocalObjectReference{},
+		},
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-alertmanager",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "alertmanager",
+					"release":   name,
+				},
+				Annotations: map[string]string{},
+			},
+		},
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-node-exporter",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "node-exporter",
+					"release":   name,
+				},
+				Annotations: map[string]string{},
+			},
+		},
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-pushgateway",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "pushgateway",
+					"release":   name,
+				},
+				Annotations: map[string]string{},
+			},
+		},
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-server",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "server",
+					"release":   name,
+				},
+				Annotations: map[string]string{},
+			},
+		},
+		&core.ConfigMap{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ConfigMap",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-alertmanager",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "alertmanager",
+					"release":   name,
+				},
+			},
+			Data: map[string]string{
+				"alertmanager.yml": "global: {}\nreceivers:\n- name: default-receiver\nroute:\n  group_interval: 5m\n  group_wait: 10s\n  receiver: default-receiver\n  repeat_interval: 3h\n",
+			},
+		},
+		&core.ConfigMap{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ConfigMap",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-server",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "server",
+					"release":   name,
+				},
+			},
+			Data: map[string]string{
+				"alerting_rules.yml":  "{}\n",
+				"alerts":              "{}\n",
+				"prometheus.yml":      "global:\n  evaluation_interval: 1m\n  scrape_interval: 1m\n  scrape_timeout: 10s\nrule_files:\n- /etc/config/recording_rules.yml\n- /etc/config/alerting_rules.yml\n- /etc/config/rules\n- /etc/config/alerts\nscrape_configs:\n- job_name: prometheus\n  static_configs:\n  - targets:\n    - localhost:9090\n- bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token\n  job_name: kubernetes-apiservers\n  kubernetes_sd_configs:\n  - role: endpoints\n  relabel_configs:\n  - action: keep\n    regex: default;kubernetes;https\n    source_labels:\n    - __meta_kubernetes_namespace\n    - __meta_kubernetes_service_name\n    - __meta_kubernetes_endpoint_port_name\n  scheme: https\n  tls_config:\n    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    insecure_skip_verify: true\n- bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token\n  job_name: kubernetes-nodes\n  kubernetes_sd_configs:\n  - role: node\n  relabel_configs:\n  - action: labelmap\n    regex: __meta_kubernetes_node_label_(.+)\n  - replacement: kubernetes.default.svc:443\n    target_label: __address__\n  - regex: (.+)\n    replacement: /api/v1/nodes/$1/proxy/metrics\n    source_labels:\n    - __meta_kubernetes_node_name\n    target_label: __metrics_path__\n  scheme: https\n  tls_config:\n    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    insecure_skip_verify: true\n- bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token\n  job_name: kubernetes-nodes-cadvisor\n  kubernetes_sd_configs:\n  - role: node\n  relabel_configs:\n  - action: labelmap\n    regex: __meta_kubernetes_node_label_(.+)\n  - replacement: kubernetes.default.svc:443\n    target_label: __address__\n  - regex: (.+)\n    replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor\n    source_labels:\n    - __meta_kubernetes_node_name\n    target_label: __metrics_path__\n  scheme: https\n  tls_config:\n    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    insecure_skip_verify: true\n- job_name: kubernetes-service-endpoints\n  kubernetes_sd_configs:\n  - role: endpoints\n  relabel_configs:\n  - action: keep\n    regex: true\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_scrape\n  - action: drop\n    regex: true\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_scrape_slow\n  - action: replace\n    regex: (https?)\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_scheme\n    target_label: __scheme__\n  - action: replace\n    regex: (.+)\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_path\n    target_label: __metrics_path__\n  - action: replace\n    regex: ([^:]+)(?::\\d+)?;(\\d+)\n    replacement: $1:$2\n    source_labels:\n    - __address__\n    - __meta_kubernetes_service_annotation_prometheus_io_port\n    target_label: __address__\n  - action: labelmap\n    regex: __meta_kubernetes_service_annotation_prometheus_io_param_(.+)\n    replacement: __param_$1\n  - action: labelmap\n    regex: __meta_kubernetes_service_label_(.+)\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_namespace\n    target_label: namespace\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_service_name\n    target_label: service\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_pod_node_name\n    target_label: node\n- job_name: kubernetes-service-endpoints-slow\n  kubernetes_sd_configs:\n  - role: endpoints\n  relabel_configs:\n  - action: keep\n    regex: true\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_scrape_slow\n  - action: replace\n    regex: (https?)\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_scheme\n    target_label: __scheme__\n  - action: replace\n    regex: (.+)\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_path\n    target_label: __metrics_path__\n  - action: replace\n    regex: ([^:]+)(?::\\d+)?;(\\d+)\n    replacement: $1:$2\n    source_labels:\n    - __address__\n    - __meta_kubernetes_service_annotation_prometheus_io_port\n    target_label: __address__\n  - action: labelmap\n    regex: __meta_kubernetes_service_annotation_prometheus_io_param_(.+)\n    replacement: __param_$1\n  - action: labelmap\n    regex: __meta_kubernetes_service_label_(.+)\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_namespace\n    target_label: namespace\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_service_name\n    target_label: service\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_pod_node_name\n    target_label: node\n  scrape_interval: 5m\n  scrape_timeout: 30s\n- honor_labels: true\n  job_name: prometheus-pushgateway\n  kubernetes_sd_configs:\n  - role: service\n  relabel_configs:\n  - action: keep\n    regex: pushgateway\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_probe\n- job_name: kubernetes-services\n  kubernetes_sd_configs:\n  - role: service\n  metrics_path: /probe\n  params:\n    module:\n    - http_2xx\n  relabel_configs:\n  - action: keep\n    regex: true\n    source_labels:\n    - __meta_kubernetes_service_annotation_prometheus_io_probe\n  - source_labels:\n    - __address__\n    target_label: __param_target\n  - replacement: blackbox\n    target_label: __address__\n  - source_labels:\n    - __param_target\n    target_label: instance\n  - action: labelmap\n    regex: __meta_kubernetes_service_label_(.+)\n  - source_labels:\n    - __meta_kubernetes_namespace\n    target_label: namespace\n  - source_labels:\n    - __meta_kubernetes_service_name\n    target_label: service\n- job_name: kubernetes-pods\n  kubernetes_sd_configs:\n  - role: pod\n  relabel_configs:\n  - action: keep\n    regex: true\n    source_labels:\n    - __meta_kubernetes_pod_annotation_prometheus_io_scrape\n  - action: drop\n    regex: true\n    source_labels:\n    - __meta_kubernetes_pod_annotation_prometheus_io_scrape_slow\n  - action: replace\n    regex: (https?)\n    source_labels:\n    - __meta_kubernetes_pod_annotation_prometheus_io_scheme\n    target_label: __scheme__\n  - action: replace\n    regex: (.+)\n    source_labels:\n    - __meta_kubernetes_pod_annotation_prometheus_io_path\n    target_label: __metrics_path__\n  - action: replace\n    regex: ([^:]+)(?::\\d+)?;(\\d+)\n    replacement: $1:$2\n    source_labels:\n    - __address__\n    - __meta_kubernetes_pod_annotation_prometheus_io_port\n    target_label: __address__\n  - action: labelmap\n    regex: __meta_kubernetes_pod_annotation_prometheus_io_param_(.+)\n    replacement: __param_$1\n  - action: labelmap\n    regex: __meta_kubernetes_pod_label_(.+)\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_namespace\n    target_label: namespace\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_pod_name\n    target_label: pod\n  - action: drop\n    regex: Pending|Succeeded|Failed|Completed\n    source_labels:\n    - __meta_kubernetes_pod_phase\n- job_name: kubernetes-pods-slow\n  kubernetes_sd_configs:\n  - role: pod\n  relabel_configs:\n  - action: keep\n    regex: true\n    source_labels:\n    - __meta_kubernetes_pod_annotation_prometheus_io_scrape_slow\n  - action: replace\n    regex: (https?)\n    source_labels:\n    - __meta_kubernetes_pod_annotation_prometheus_io_scheme\n    target_label: __scheme__\n  - action: replace\n    regex: (.+)\n    source_labels:\n    - __meta_kubernetes_pod_annotation_prometheus_io_path\n    target_label: __metrics_path__\n  - action: replace\n    regex: ([^:]+)(?::\\d+)?;(\\d+)\n    replacement: $1:$2\n    source_labels:\n    - __address__\n    - __meta_kubernetes_pod_annotation_prometheus_io_port\n    target_label: __address__\n  - action: labelmap\n    regex: __meta_kubernetes_pod_annotation_prometheus_io_param_(.+)\n    replacement: __param_$1\n  - action: labelmap\n    regex: __meta_kubernetes_pod_label_(.+)\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_namespace\n    target_label: namespace\n  - action: replace\n    source_labels:\n    - __meta_kubernetes_pod_name\n    target_label: pod\n  - action: drop\n    regex: Pending|Succeeded|Failed|Completed\n    source_labels:\n    - __meta_kubernetes_pod_phase\n  scrape_interval: 5m\n  scrape_timeout: 30s\nalerting:\n  alertmanagers:\n  - kubernetes_sd_configs:\n      - role: pod\n    tls_config:\n      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token\n    relabel_configs:\n    - source_labels: [__meta_kubernetes_namespace]\n      regex: " + namespace + "\n      action: keep\n    - source_labels: [__meta_kubernetes_pod_label_app]\n      regex: prometheus\n      action: keep\n    - source_labels: [__meta_kubernetes_pod_label_component]\n      regex: alertmanager\n      action: keep\n    - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_probe]\n      regex: .*\n      action: keep\n    - source_labels: [__meta_kubernetes_pod_container_port_number]\n      regex: \"9093\"\n      action: keep\n",
+				"recording_rules.yml": "{}\n",
+				"rules":               "{}\n",
+			},
+		},
+		&core.PersistentVolumeClaim{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "PersistentVolumeClaim",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-alertmanager",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "alertmanager",
+					"instance":  name,
+				},
+			},
+			Spec: core.PersistentVolumeClaimSpec{
+				AccessModes: []core.PersistentVolumeAccessMode{
+					"ReadWriteOnce",
+				},
+				Resources: core.ResourceRequirements{
+					Requests: core.ResourceList{
+						"storage": "2Gi",
+					},
+				},
+			},
+		},
+		&core.PersistentVolumeClaim{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "PersistentVolumeClaim",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-server",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "server",
+					"instance":  name,
+				},
+			},
+			Spec: core.PersistentVolumeClaimSpec{
+				AccessModes: []core.PersistentVolumeAccessMode{
+					"ReadWriteOnce",
+				},
+				Resources: core.ResourceRequirements{
+					Requests: core.ResourceList{
+						"storage": "8Gi",
+					},
+				},
+			},
+		},
+		&rbac.ClusterRole{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRole",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-kube-state-metrics",
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "metrics",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "kube-state-metrics",
+					"app.kubernetes.io/part-of":   "kube-state-metrics",
+					"app.kubernetes.io/version":   "2.4.1",
+				},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"certificates.k8s.io",
+					},
+					Resources: []string{
+						"certificatesigningrequests",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"configmaps",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"batch",
+					},
+					Resources: []string{
+						"cronjobs",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"extensions",
+						"apps",
+					},
+					Resources: []string{
+						"daemonsets",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"extensions",
+						"apps",
+					},
+					Resources: []string{
+						"deployments",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"endpoints",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"autoscaling",
+					},
+					Resources: []string{
+						"horizontalpodautoscalers",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"extensions",
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"ingresses",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"batch",
+					},
+					Resources: []string{
+						"jobs",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"limitranges",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"admissionregistration.k8s.io",
+					},
+					Resources: []string{
+						"mutatingwebhookconfigurations",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"namespaces",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"networkpolicies",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"nodes",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"persistentvolumeclaims",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"persistentvolumes",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"policy",
+					},
+					Resources: []string{
+						"poddisruptionbudgets",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"pods",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"extensions",
+						"apps",
+					},
+					Resources: []string{
+						"replicasets",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"replicationcontrollers",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"resourcequotas",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"secrets",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"services",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"apps",
+					},
+					Resources: []string{
+						"statefulsets",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"storage.k8s.io",
+					},
+					Resources: []string{
+						"storageclasses",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"admissionregistration.k8s.io",
+					},
+					Resources: []string{
+						"validatingwebhookconfigurations",
+					},
+				},
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"storage.k8s.io",
+					},
+					Resources: []string{
+						"volumeattachments",
+					},
+				},
+			},
+		},
+		&rbac.ClusterRole{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRole",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-prometheus-alertmanager",
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "alertmanager",
+					"instance":  name,
+				},
+			},
+			Rules: []rbac.PolicyRule{},
+		},
+		&rbac.ClusterRole{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRole",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-prometheus-pushgateway",
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "pushgateway",
+					"instance":  name,
+				},
+			},
+			Rules: []rbac.PolicyRule{},
+		},
+		&rbac.ClusterRole{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRole",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-prometheus-server",
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "server",
+					"instance":  name,
+				},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"nodes",
+						"nodes/proxy",
+						"nodes/metrics",
+						"services",
+						"endpoints",
+						"pods",
+						"ingresses",
+						"configmaps",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"extensions",
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"ingresses/status",
+						"ingresses",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+					},
+					NonResourceURLs: []string{
+						"/metrics",
+					},
+				},
+			},
+		},
+		&rbac.ClusterRoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-kube-state-metrics",
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "metrics",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "kube-state-metrics",
+					"app.kubernetes.io/part-of":   "kube-state-metrics",
+					"app.kubernetes.io/version":   "2.4.1",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-kube-state-metrics",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     name + "-kube-state-metrics",
+			},
+		},
+		&rbac.ClusterRoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-prometheus-alertmanager",
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "alertmanager",
+					"instance":  name,
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-prometheus-alertmanager",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     name + "-prometheus-alertmanager",
+			},
+		},
+		&rbac.ClusterRoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-prometheus-pushgateway",
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "pushgateway",
+					"instance":  name,
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-prometheus-pushgateway",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     name + "-prometheus-pushgateway",
+			},
+		},
+		&rbac.ClusterRoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-prometheus-server",
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "server",
+					"instance":  name,
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-prometheus-server",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     name + "-prometheus-server",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-kube-state-metrics",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "metrics",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "kube-state-metrics",
+					"app.kubernetes.io/part-of":   "kube-state-metrics",
+					"app.kubernetes.io/version":   "2.4.1",
+				},
+				Annotations: map[string]string{
+					"prometheus.io/scrape": "true",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:     "http",
+						Protocol: "TCP",
+						Port:     8080,
+						TargetPort: intstr.IntOrString{
+							IsInt:  true,
+							IntVal: 8080,
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "kube-state-metrics",
+				},
+				Type: "ClusterIP",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-alertmanager",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "alertmanager",
+					"instance":  name,
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:     "http",
+						Protocol: "TCP",
+						Port:     80,
+						TargetPort: intstr.IntOrString{
+							IsInt:  true,
+							IntVal: 9093,
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app":       "prometheus",
+					"component": "alertmanager",
+					"instance":  name,
+				},
+				Type:            "ClusterIP",
+				SessionAffinity: "None",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-node-exporter",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "node-exporter",
+					"instance":  name,
+				},
+				Annotations: map[string]string{
+					"prometheus.io/scrape": "true",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:     "metrics",
+						Protocol: "TCP",
+						Port:     9100,
+						TargetPort: intstr.IntOrString{
+							IsInt:  true,
+							IntVal: 9100,
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app":       "prometheus",
+					"component": "node-exporter",
+					"instance":  name,
+				},
+				ClusterIP: "None",
+				Type:      "ClusterIP",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-pushgateway",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "pushgateway",
+					"instance":  name,
+				},
+				Annotations: map[string]string{
+					"prometheus.io/probe": "pushgateway",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:     "http",
+						Protocol: "TCP",
+						Port:     9091,
+						TargetPort: intstr.IntOrString{
+							IsInt:  true,
+							IntVal: 9091,
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app":       "prometheus",
+					"component": "pushgateway",
+					"instance":  name,
+				},
+				Type: "ClusterIP",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-server",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "server",
+					"instance":  name,
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:     "http",
+						Protocol: "TCP",
+						Port:     80,
+						TargetPort: intstr.IntOrString{
+							IsInt:  true,
+							IntVal: 9090,
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app":       "prometheus",
+					"component": "server",
+					"instance":  name,
+				},
+				Type:            "ClusterIP",
+				SessionAffinity: "None",
+			},
+		},
+		&apps.DaemonSet{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "DaemonSet",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-node-exporter",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "node-exporter",
+					"instance":  name,
+				},
+			},
+			Spec: apps.DaemonSetSpec{
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app":       "prometheus",
+						"component": "node-exporter",
+						"instance":  name,
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app":       "prometheus",
+							"component": "node-exporter",
+							"instance":  name,
+						},
+					},
+					Spec: core.PodSpec{
+						Volumes: []core.Volume{
+							{
+								Name: "proc",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{
+										Path: "/proc",
+									},
+								},
+							},
+							{
+								Name: "sys",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{
+										Path: "/sys",
+									},
+								},
+							},
+							{
+								Name: "root",
+								VolumeSource: core.VolumeSource{
+									HostPath: &core.HostPathVolumeSource{
+										Path: "/",
+									},
+								},
+							},
+						},
+						Containers: []core.Container{
+							{
+								Name:  "prometheus-node-exporter",
+								Image: "quay.io/prometheus/node-exporter:v1.3.0",
+								Args: []string{
+									"--path.procfs=/host/proc",
+									"--path.sysfs=/host/sys",
+									"--path.rootfs=/host/root",
+									"--web.listen-address=:9100",
+								},
+								Ports: []core.ContainerPort{
+									{
+										Name:          "metrics",
+										HostPort:      9100,
+										ContainerPort: 9100,
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "proc",
+										ReadOnly:  true,
+										MountPath: "/host/proc",
+									},
+									{
+										Name:      "sys",
+										ReadOnly:  true,
+										MountPath: "/host/sys",
+									},
+									{
+										Name:             "root",
+										ReadOnly:         true,
+										MountPath:        "/host/root",
+										MountPropagation: &hostToContainer,
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+							},
+						},
+						ServiceAccountName: name + "-prometheus-node-exporter",
+						HostNetwork:        true,
+						HostPID:            true,
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:    ptr.Int64(65534),
+							RunAsGroup:   ptr.Int64(65534),
+							RunAsNonRoot: ptr.Alloc(true),
+							FSGroup:      ptr.Int64(65534),
+						},
+					},
+				},
+				UpdateStrategy: apps.DaemonSetUpdateStrategy{
+					Type: "RollingUpdate",
+				},
+			},
+		},
+		&apps.Deployment{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Deployment",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-kube-state-metrics",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "metrics",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "kube-state-metrics",
+					"app.kubernetes.io/part-of":   "kube-state-metrics",
+					"app.kubernetes.io/version":   "2.4.1",
+				},
+			},
+			Spec: apps.DeploymentSpec{
+				Replicas: ptr.Int32(1),
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/instance": name,
+						"app.kubernetes.io/name":     "kube-state-metrics",
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/component": "metrics",
+							"app.kubernetes.io/instance":  name,
+							"app.kubernetes.io/name":      "kube-state-metrics",
+							"app.kubernetes.io/part-of":   "kube-state-metrics",
+							"app.kubernetes.io/version":   "2.4.1",
+						},
+					},
+					Spec: core.PodSpec{
+						Containers: []core.Container{
+							{
+								Name:  "kube-state-metrics",
+								Image: "k8s.gcr.io/kube-state-metrics/kube-state-metrics:v2.4.1",
+								Args: []string{
+									"--port=8080",
+									"--resources=certificatesigningrequests,configmaps,cronjobs,daemonsets,deployments,endpoints,horizontalpodautoscalers,ingresses,jobs,limitranges,mutatingwebhookconfigurations,namespaces,networkpolicies,nodes,persistentvolumeclaims,persistentvolumes,poddisruptionbudgets,pods,replicasets,replicationcontrollers,resourcequotas,secrets,services,statefulsets,storageclasses,validatingwebhookconfigurations,volumeattachments",
+									"--telemetry-port=8081",
+								},
+								Ports: []core.ContainerPort{
+									{
+										Name:          "http",
+										ContainerPort: 8080,
+									},
+								},
+								LivenessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/healthz",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 8080,
+											},
+										},
+									},
+									InitialDelaySeconds: 5,
+									TimeoutSeconds:      5,
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 8080,
+											},
+										},
+									},
+									InitialDelaySeconds: 5,
+									TimeoutSeconds:      5,
+								},
+								ImagePullPolicy: "IfNotPresent",
+							},
+						},
+						ServiceAccountName: name + "-kube-state-metrics",
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:  ptr.Int64(65534),
+							RunAsGroup: ptr.Int64(65534),
+							FSGroup:    ptr.Int64(65534),
+						},
+					},
+				},
+			},
+		},
+		&apps.Deployment{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Deployment",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-alertmanager",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "alertmanager",
+					"instance":  name,
+				},
+			},
+			Spec: apps.DeploymentSpec{
+				Replicas: ptr.Int32(1),
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app":       "prometheus",
+						"component": "alertmanager",
+						"instance":  name,
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app":       "prometheus",
+							"component": "alertmanager",
+							"instance":  name,
+						},
+					},
+					Spec: core.PodSpec{
+						Volumes: []core.Volume{
+							{
+								Name: "config-volume",
+								VolumeSource: core.VolumeSource{
+									ConfigMap: &core.ConfigMapVolumeSource{
+										LocalObjectReference: core.LocalObjectReference{
+											Name: name + "-prometheus-alertmanager",
+										},
+									},
+								},
+							},
+							{
+								Name: "storage-volume",
+								VolumeSource: core.VolumeSource{
+									PersistentVolumeClaim: &core.PersistentVolumeClaimVolumeSource{
+										ClaimName: name + "-prometheus-alertmanager",
+									},
+								},
+							},
+						},
+						Containers: []core.Container{
+							{
+								Name:  "prometheus-alertmanager",
+								Image: "quay.io/prometheus/alertmanager:v0.23.0",
+								Args: []string{
+									"--config.file=/etc/config/alertmanager.yml",
+									"--storage.path=/data",
+									"--cluster.listen-address=",
+									"--web.external-url=http://localhost:9093",
+								},
+								Ports: []core.ContainerPort{
+									{
+										ContainerPort: 9093,
+									},
+								},
+								Env: []core.EnvVar{
+									{
+										Name: "POD_IP",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												APIVersion: "v1",
+												FieldPath:  "status.podIP",
+											},
+										},
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "config-volume",
+										MountPath: "/etc/config",
+									},
+									{
+										Name:      "storage-volume",
+										MountPath: "/data",
+									},
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/-/ready",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 9093,
+											},
+										},
+									},
+									InitialDelaySeconds: 30,
+									TimeoutSeconds:      30,
+								},
+								ImagePullPolicy: "IfNotPresent",
+							},
+							{
+								Name:  "prometheus-alertmanager-configmap-reload",
+								Image: "jimmidyson/configmap-reload:v0.5.0",
+								Args: []string{
+									"--volume-dir=/etc/config",
+									"--webhook-url=http://127.0.0.1:9093/-/reload",
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "config-volume",
+										ReadOnly:  true,
+										MountPath: "/etc/config",
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+							},
+						},
+						ServiceAccountName: name + "-prometheus-alertmanager",
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:    ptr.Int64(65534),
+							RunAsGroup:   ptr.Int64(65534),
+							RunAsNonRoot: ptr.Alloc(true),
+							FSGroup:      ptr.Int64(65534),
+						},
+					},
+				},
+			},
+		},
+		&apps.Deployment{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Deployment",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-pushgateway",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "pushgateway",
+					"instance":  name,
+				},
+			},
+			Spec: apps.DeploymentSpec{
+				Replicas: ptr.Int32(1),
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app":       "prometheus",
+						"component": "pushgateway",
+						"instance":  name,
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app":       "prometheus",
+							"component": "pushgateway",
+							"instance":  name,
+						},
+					},
+					Spec: core.PodSpec{
+						Containers: []core.Container{
+							{
+								Name:  "prometheus-pushgateway",
+								Image: "prom/pushgateway:v1.4.2",
+								Ports: []core.ContainerPort{
+									{
+										ContainerPort: 9091,
+									},
+								},
+								LivenessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/-/healthy",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 9091,
+											},
+										},
+									},
+									InitialDelaySeconds: 10,
+									TimeoutSeconds:      10,
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/-/ready",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 9091,
+											},
+										},
+									},
+									InitialDelaySeconds: 10,
+									TimeoutSeconds:      10,
+								},
+								ImagePullPolicy: "IfNotPresent",
+							},
+						},
+						ServiceAccountName: name + "-prometheus-pushgateway",
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:    ptr.Int64(65534),
+							RunAsNonRoot: ptr.Alloc(true),
+						},
+					},
+				},
+			},
+		},
+		&apps.Deployment{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Deployment",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-prometheus-server",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":       "prometheus",
+					"component": "server",
+					"instance":  name,
+				},
+			},
+			Spec: apps.DeploymentSpec{
+				Replicas: ptr.Int32(1),
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app":       "prometheus",
+						"component": "server",
+						"instance":  name,
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app":       "prometheus",
+							"component": "server",
+							"instance":  name,
+						},
+					},
+					Spec: core.PodSpec{
+						Volumes: []core.Volume{
+							{
+								Name: "config-volume",
+								VolumeSource: core.VolumeSource{
+									ConfigMap: &core.ConfigMapVolumeSource{
+										LocalObjectReference: core.LocalObjectReference{
+											Name: name + "-prometheus-server",
+										},
+									},
+								},
+							},
+							{
+								Name: "storage-volume",
+								VolumeSource: core.VolumeSource{
+									PersistentVolumeClaim: &core.PersistentVolumeClaimVolumeSource{
+										ClaimName: name + "-prometheus-server",
+									},
+								},
+							},
+						},
+						Containers: []core.Container{
+							{
+								Name:  "prometheus-server-configmap-reload",
+								Image: "jimmidyson/configmap-reload:v0.5.0",
+								Args: []string{
+									"--volume-dir=/etc/config",
+									"--webhook-url=http://127.0.0.1:9090/-/reload",
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "config-volume",
+										ReadOnly:  true,
+										MountPath: "/etc/config",
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+							},
+							{
+								Name:  "prometheus-server",
+								Image: "quay.io/prometheus/prometheus:v2.34.0",
+								Args: []string{
+									"--storage.tsdb.retention.time=15d",
+									"--config.file=/etc/config/prometheus.yml",
+									"--storage.tsdb.path=/data",
+									"--web.console.libraries=/etc/prometheus/console_libraries",
+									"--web.console.templates=/etc/prometheus/consoles",
+									"--web.enable-lifecycle",
+								},
+								Ports: []core.ContainerPort{
+									{
+										ContainerPort: 9090,
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "config-volume",
+										MountPath: "/etc/config",
+									},
+									{
+										Name:      "storage-volume",
+										MountPath: "/data",
+									},
+								},
+								LivenessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/-/healthy",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 9090,
+											},
+											Scheme: "HTTP",
+										},
+									},
+									InitialDelaySeconds: 30,
+									TimeoutSeconds:      10,
+									PeriodSeconds:       15,
+									SuccessThreshold:    1,
+									FailureThreshold:    3,
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/-/ready",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 9090,
+											},
+											Scheme: "HTTP",
+										},
+									},
+									InitialDelaySeconds: 30,
+									TimeoutSeconds:      4,
+									PeriodSeconds:       5,
+									SuccessThreshold:    1,
+									FailureThreshold:    3,
+								},
+								ImagePullPolicy: "IfNotPresent",
+							},
+						},
+						TerminationGracePeriodSeconds: ptr.Int64(300),
+						DNSPolicy:                     "ClusterFirst",
+						ServiceAccountName:            name + "-prometheus-server",
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:    ptr.Int64(65534),
+							RunAsGroup:   ptr.Int64(65534),
+							RunAsNonRoot: ptr.Alloc(true),
+							FSGroup:      ptr.Int64(65534),
+						},
+						EnableServiceLinks: ptr.Alloc(true),
+					},
+				},
+			},
+		},
+	}
+}

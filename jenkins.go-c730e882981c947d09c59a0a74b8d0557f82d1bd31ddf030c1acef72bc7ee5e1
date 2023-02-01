@@ -1,0 +1,633 @@
+// PUBLISH-CODE
+
+// Apache License, Version 2.0
+
+// This code is taken from github.com/jenkinsci/helm-charts/main/charts/jenkins
+// and extensively modified.
+
+package marketplaceapps
+
+import (
+	"fmt"
+
+	apps "go.tectonic.network/lib/k8s/imp/api/apps/v1"
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+	rbac "go.tectonic.network/lib/k8s/imp/api/rbac/v1"
+	"go.tectonic.network/lib/k8s/intstr"
+	meta "go.tectonic.network/lib/k8s/meta/v1"
+	"go.tectonic.network/lib/ptr"
+)
+
+var jenkinsInstructions = func(name, namespace string) string {
+	selector := fmt.Sprintf("app.kubernetes.io/name=jenkins,app.kubernetes.io/instance=%s", name)
+	serviceName := fmt.Sprintf("%s-jenkins", name)
+	return fmt.Sprintf(`The app is ready to use when all pods returned by "kubectl get pods -n %s --selector %s" are in state "Running".
+The UI is exposed by the service %q, in namespace %q.`, namespace, selector, serviceName, namespace)
+}
+
+var jenkinsConfig = func(name, namespace string) []any {
+	return []any{
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+		},
+		&core.ConfigMap{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ConfigMap",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Data: map[string]string{
+				"apply_config.sh": "set -e\necho \"disable Setup Wizard\"\n# Prevent Setup Wizard when JCasC is enabled\necho $JENKINS_VERSION > /var/jenkins_home/jenkins.install.UpgradeWizard.state\necho $JENKINS_VERSION > /var/jenkins_home/jenkins.install.InstallUtil.lastExecVersion\necho \"download plugins\"\n# Install missing plugins\ncp /var/jenkins_config/plugins.txt /var/jenkins_home;\nrm -rf /usr/share/jenkins/ref/plugins/*.lock\nversion () { echo \"$@\" | awk -F. '{ printf(\"%d%03d%03d%03d\\n\", $1,$2,$3,$4); }'; }\nif [ -f \"/usr/share/jenkins/jenkins.war\" ] && [ -n \"$(command -v jenkins-plugin-cli)\" 2>/dev/null ] && [ $(version $(jenkins-plugin-cli --version)) -ge $(version \"2.1.1\") ]; then\n  jenkins-plugin-cli --verbose --war \"/usr/share/jenkins/jenkins.war\" --plugin-file \"/var/jenkins_home/plugins.txt\" --latest true;\nelse\n  /usr/local/bin/install-plugins.sh `echo $(cat /var/jenkins_home/plugins.txt)`;\nfi\necho \"copy plugins to shared volume\"\n# Copy plugins to shared volume\nyes n | cp -i /usr/share/jenkins/ref/plugins/* /var/jenkins_plugins/;\necho \"finished initialization\"",
+				"plugins.txt":     "kubernetes:1.31.3\nworkflow-aggregator:2.6\ngit:4.10.2\nconfiguration-as-code:1414.v878271fc496f",
+			},
+		},
+		&core.ConfigMap{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ConfigMap",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins-jenkins-jcasc-config",
+				Namespace: namespace,
+				Labels: map[string]string{
+					name + "-jenkins-jenkins-config": "true",
+					"app.kubernetes.io/component":    "jenkins-controller",
+					"app.kubernetes.io/instance":     name,
+					"app.kubernetes.io/name":         "jenkins",
+				},
+			},
+			Data: map[string]string{
+				"jcasc-default-config.yaml": "jenkins:\n  authorizationStrategy:\n    loggedInUsersCanDoAnything:\n      allowAnonymousRead: false\n  securityRealm:\n    local:\n      allowsSignup: false\n      enableCaptcha: false\n      users:\n      - id: \"${chart-admin-username}\"\n        name: \"Jenkins Admin\"\n        password: \"${chart-admin-password}\"\n  disableRememberMe: false\n  mode: NORMAL\n  numExecutors: 0\n  labelString: \"\"\n  projectNamingStrategy: \"standard\"\n  markupFormatter:\n    plainText\n  clouds:\n  - kubernetes:\n      containerCapStr: \"10\"\n      defaultsProviderTemplate: \"\"\n      connectTimeout: \"5\"\n      readTimeout: \"15\"\n      jenkinsUrl: \"http://" + name + "-jenkins." + namespace + ".svc.cluster.local:8080\"\n      jenkinsTunnel: \"" + name + "-jenkins-agent." + namespace + ".svc.cluster.local:50000\"\n      maxRequestsPerHostStr: \"32\"\n      name: \"kubernetes\"\n      namespace: \"" + namespace + "\"\n      serverUrl: \"https://kubernetes.default\"\n      podLabels:\n      - key: \"jenkins/" + name + "-jenkins-agent\"\n        value: \"true\"\n      templates:\n        - name: \"default\"\n          id: be62f2fe67fa3e83c0157edaa53417c084c49a8aa88c3702e3ca1cc8df3fcbe2\n          containers:\n          - name: \"jnlp\"\n            alwaysPullImage: false\n            args: \"^${computer.jnlpmac} ^${computer.name}\"\n            command: \n            envVars:\n              - envVar:\n                  key: \"JENKINS_URL\"\n                  value: \"http://" + name + "-jenkins." + namespace + ".svc.cluster.local:8080/\"\n            image: \"jenkins/inbound-agent:4.11.2-4\"\n            privileged: \"false\"\n            resourceLimitCpu: 512m\n            resourceLimitMemory: 512Mi\n            resourceRequestCpu: 512m\n            resourceRequestMemory: 512Mi\n            runAsUser: \n            runAsGroup: \n            ttyEnabled: false\n            workingDir: /home/jenkins/agent\n          idleMinutes: 0\n          instanceCap: 2147483647\n          label: \"" + name + "-jenkins-agent \"\n          nodeUsageMode: \"NORMAL\"\n          podRetention: Never\n          showRawYaml: true\n          serviceAccount: \"default\"\n          slaveConnectTimeoutStr: \"100\"\n          yamlMergeStrategy: override\n  crumbIssuer:\n    standard:\n      excludeClientIPFromCrumb: true\nsecurity:\n  apiToken:\n    creationOfLegacyTokenEnabled: false\n    tokenGenerationOnCreationEnabled: false\n    usageStatisticsEnabled: true\nunclassified:\n  location:\n    adminAddress: \n    url: http://" + name + "-jenkins:8080",
+			},
+		},
+		&core.PersistentVolumeClaim{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "PersistentVolumeClaim",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Spec: core.PersistentVolumeClaimSpec{
+				AccessModes: []core.PersistentVolumeAccessMode{
+					"ReadWriteOnce",
+				},
+				Resources: core.ResourceRequirements{
+					Requests: core.ResourceList{
+						"storage": "8Gi",
+					},
+				},
+			},
+		},
+		&rbac.Role{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Role",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins-schedule-agents",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"pods",
+						"pods/exec",
+						"pods/log",
+						"persistentvolumeclaims",
+						"events",
+					},
+				},
+				{
+					Verbs: []string{
+						"create",
+						"delete",
+						"deletecollection",
+						"patch",
+						"update",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"pods",
+						"pods/exec",
+						"persistentvolumeclaims",
+					},
+				},
+			},
+		},
+		&rbac.Role{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Role",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins-casc-reload",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs: []string{
+						"get",
+						"watch",
+						"list",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"configmaps",
+					},
+				},
+			},
+		},
+		&rbac.RoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "RoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins-schedule-agents",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-jenkins",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     name + "-jenkins-schedule-agents",
+			},
+		},
+		&rbac.RoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "RoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins-watch-configmaps",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-jenkins",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     name + "-jenkins-casc-reload",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins-agent",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name: "agent-listener",
+						Port: 50000,
+						TargetPort: intstr.IntOrString{
+							IsInt:  true,
+							IntVal: 50000,
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+				},
+				Type: "ClusterIP",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name: "http",
+						Port: 8080,
+						TargetPort: intstr.IntOrString{
+							IsInt:  true,
+							IntVal: 8080,
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+				},
+				Type: "ClusterIP",
+			},
+		},
+		&apps.StatefulSet{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "StatefulSet",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-jenkins",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "jenkins-controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "jenkins",
+				},
+			},
+			Spec: apps.StatefulSetSpec{
+				Replicas: ptr.Int32(1),
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/component": "jenkins-controller",
+						"app.kubernetes.io/instance":  name,
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/component": "jenkins-controller",
+							"app.kubernetes.io/instance":  name,
+							"app.kubernetes.io/name":      "jenkins",
+						},
+						Annotations: map[string]string{
+							"checksum/config": "1b329a048c1f602f57471ef774770982453cd8b11514945df4b087f48f50adbd",
+						},
+					},
+					Spec: core.PodSpec{
+						Volumes: []core.Volume{
+							{
+								Name: "plugins",
+								VolumeSource: core.VolumeSource{
+									EmptyDir: &core.EmptyDirVolumeSource{},
+								},
+							},
+							{
+								Name: "jenkins-config",
+								VolumeSource: core.VolumeSource{
+									ConfigMap: &core.ConfigMapVolumeSource{
+										LocalObjectReference: core.LocalObjectReference{
+											Name: name + "-jenkins",
+										},
+									},
+								},
+							},
+							{
+								Name: "plugin-dir",
+								VolumeSource: core.VolumeSource{
+									EmptyDir: &core.EmptyDirVolumeSource{},
+								},
+							},
+							{
+								Name: "jenkins-cache",
+								VolumeSource: core.VolumeSource{
+									EmptyDir: &core.EmptyDirVolumeSource{},
+								},
+							},
+							{
+								Name: "jenkins-home",
+								VolumeSource: core.VolumeSource{
+									PersistentVolumeClaim: &core.PersistentVolumeClaimVolumeSource{
+										ClaimName: name + "-jenkins",
+									},
+								},
+							},
+							{
+								Name: "sc-config-volume",
+								VolumeSource: core.VolumeSource{
+									EmptyDir: &core.EmptyDirVolumeSource{},
+								},
+							},
+							{
+								Name: "tmp-volume",
+								VolumeSource: core.VolumeSource{
+									EmptyDir: &core.EmptyDirVolumeSource{},
+								},
+							},
+						},
+						InitContainers: []core.Container{
+							{
+								Name:  "init",
+								Image: "jenkins/jenkins:2.332.2-jdk11",
+								Command: []string{
+									"sh",
+									"/var/jenkins_config/apply_config.sh",
+								},
+								Resources: core.ResourceRequirements{
+									Limits: core.ResourceList{
+										"cpu":    "2000m",
+										"memory": "4096Mi",
+									},
+									Requests: core.ResourceList{
+										"cpu":    "50m",
+										"memory": "256Mi",
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "jenkins-home",
+										MountPath: "/var/jenkins_home",
+									},
+									{
+										Name:      "jenkins-config",
+										MountPath: "/var/jenkins_config",
+									},
+									{
+										Name:      "plugins",
+										MountPath: "/usr/share/jenkins/ref/plugins",
+									},
+									{
+										Name:      "plugin-dir",
+										MountPath: "/var/jenkins_plugins",
+									},
+									{
+										Name:      "tmp-volume",
+										MountPath: "/tmp",
+									},
+								},
+								ImagePullPolicy: "Always",
+								SecurityContext: &core.SecurityContext{
+									RunAsUser:                ptr.Int64(1000),
+									RunAsGroup:               ptr.Int64(1000),
+									ReadOnlyRootFilesystem:   ptr.Alloc(true),
+									AllowPrivilegeEscalation: ptr.Alloc(false),
+								},
+							},
+						},
+						Containers: []core.Container{
+							{
+								Name:  "jenkins",
+								Image: "jenkins/jenkins:2.332.2-jdk11",
+								Args: []string{
+									"--httpPort=8080",
+								},
+								Ports: []core.ContainerPort{
+									{
+										Name:          "http",
+										ContainerPort: 8080,
+									},
+									{
+										Name:          "agent-listener",
+										ContainerPort: 50000,
+									},
+								},
+								Env: []core.EnvVar{
+									{
+										Name: "POD_NAME",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												FieldPath: "metadata.name",
+											},
+										},
+									},
+									{
+										Name:  "JAVA_OPTS",
+										Value: "-Dcasc.reload.token=$(POD_NAME) ",
+									},
+									{
+										Name:  "JENKINS_OPTS",
+										Value: "--webroot=/var/jenkins_cache/war ",
+									},
+									{
+										Name:  "JENKINS_SLAVE_AGENT_PORT",
+										Value: "50000",
+									},
+									{
+										Name:  "CASC_JENKINS_CONFIG",
+										Value: "/var/jenkins_home/casc_configs",
+									},
+								},
+								Resources: core.ResourceRequirements{
+									Limits: core.ResourceList{
+										"cpu":    "2000m",
+										"memory": "4096Mi",
+									},
+									Requests: core.ResourceList{
+										"cpu":    "50m",
+										"memory": "256Mi",
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "jenkins-home",
+										MountPath: "/var/jenkins_home",
+									},
+									{
+										Name:      "jenkins-config",
+										ReadOnly:  true,
+										MountPath: "/var/jenkins_config",
+									},
+									{
+										Name:      "plugin-dir",
+										MountPath: "/usr/share/jenkins/ref/plugins/",
+									},
+									{
+										Name:      "sc-config-volume",
+										MountPath: "/var/jenkins_home/casc_configs",
+									},
+									{
+										Name:      "jenkins-cache",
+										MountPath: "/var/jenkins_cache",
+									},
+									{
+										Name:      "tmp-volume",
+										MountPath: "/tmp",
+									},
+								},
+								LivenessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/login",
+											Port: intstr.IntOrString{
+												StrVal: "http",
+											},
+										},
+									},
+									TimeoutSeconds:   5,
+									PeriodSeconds:    10,
+									FailureThreshold: 5,
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/login",
+											Port: intstr.IntOrString{
+												StrVal: "http",
+											},
+										},
+									},
+									TimeoutSeconds:   5,
+									PeriodSeconds:    10,
+									FailureThreshold: 3,
+								},
+								StartupProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/login",
+											Port: intstr.IntOrString{
+												StrVal: "http",
+											},
+										},
+									},
+									TimeoutSeconds:   5,
+									PeriodSeconds:    10,
+									FailureThreshold: 12,
+								},
+								ImagePullPolicy: "Always",
+								SecurityContext: &core.SecurityContext{
+									RunAsUser:                ptr.Int64(1000),
+									RunAsGroup:               ptr.Int64(1000),
+									ReadOnlyRootFilesystem:   ptr.Alloc(true),
+									AllowPrivilegeEscalation: ptr.Alloc(false),
+								},
+							},
+							{
+								Name:  "config-reload",
+								Image: "kiwigrid/k8s-sidecar:1.15.0",
+								Env: []core.EnvVar{
+									{
+										Name: "POD_NAME",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												FieldPath: "metadata.name",
+											},
+										},
+									},
+									{
+										Name:  "LABEL",
+										Value: name + "-jenkins-jenkins-config",
+									},
+									{
+										Name:  "FOLDER",
+										Value: "/var/jenkins_home/casc_configs",
+									},
+									{
+										Name:  "NAMESPACE",
+										Value: namespace,
+									},
+									{
+										Name:  "REQ_URL",
+										Value: "http://localhost:8080/reload-configuration-as-code/?casc-reload-token=$(POD_NAME)",
+									},
+									{
+										Name:  "REQ_METHOD",
+										Value: "POST",
+									},
+									{
+										Name:  "REQ_RETRY_CONNECT",
+										Value: "10",
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "sc-config-volume",
+										MountPath: "/var/jenkins_home/casc_configs",
+									},
+									{
+										Name:      "jenkins-home",
+										MountPath: "/var/jenkins_home",
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+								SecurityContext: &core.SecurityContext{
+									ReadOnlyRootFilesystem:   ptr.Alloc(true),
+									AllowPrivilegeEscalation: ptr.Alloc(false),
+								},
+							},
+						},
+						ServiceAccountName: name + "-jenkins",
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:    ptr.Int64(1000),
+							RunAsNonRoot: ptr.Alloc(true),
+							FSGroup:      ptr.Int64(1000),
+						},
+					},
+				},
+				ServiceName: name + "-jenkins",
+			},
+		},
+	}
+}

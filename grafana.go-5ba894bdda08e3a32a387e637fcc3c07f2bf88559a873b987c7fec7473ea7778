@@ -1,0 +1,373 @@
+// PUBLISH-CODE
+
+// Apache License, Version 2.0
+
+// This code is taken from github.com/grafana/helm-charts/main/charts/grafana
+// and extensively modified.
+
+package marketplaceapps
+
+import (
+	"fmt"
+
+	apps "go.tectonic.network/lib/k8s/imp/api/apps/v1"
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+	rbac "go.tectonic.network/lib/k8s/imp/api/rbac/v1"
+	"go.tectonic.network/lib/k8s/intstr"
+	meta "go.tectonic.network/lib/k8s/meta/v1"
+	"go.tectonic.network/lib/ptr"
+)
+
+var grafanaInstructions = func(name, namespace string) string {
+	selector := fmt.Sprintf("app.kubernetes.io/name=grafana,app.kubernetes.io/instance=%s", name)
+	serviceName := fmt.Sprintf("%s-grafana", name)
+	return fmt.Sprintf(`The app is ready to use when all pods returned by "kubectl get pods -n %s --selector %s" are in state "Running".
+The UI is exposed by the service %q, in namespace %q. The default username and password are respectively "admin" and "admin".`, namespace, selector, serviceName, namespace)
+}
+
+var grafanaConfig = func(name, namespace string) []any {
+	return []any{
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-grafana",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+		},
+		&core.ConfigMap{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ConfigMap",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-grafana",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+			Data: map[string]string{
+				"grafana.ini": "[analytics]\ncheck_for_updates = true\n[grafana_net]\nurl = https://grafana.net\n[log]\nmode = console\n[paths]\ndata = /var/lib/grafana/\nlogs = /var/log/grafana\nplugins = /var/lib/grafana/plugins\nprovisioning = /etc/grafana/provisioning\n",
+			},
+		},
+		&core.PersistentVolumeClaim{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "PersistentVolumeClaim",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-grafana",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+			Spec: core.PersistentVolumeClaimSpec{
+				AccessModes: []core.PersistentVolumeAccessMode{
+					"ReadWriteOnce",
+				},
+				Resources: core.ResourceRequirements{
+					Requests: core.ResourceList{
+						"storage": "10Gi",
+					},
+				},
+			},
+		},
+		&rbac.ClusterRole{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRole",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-grafana-clusterrole",
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+			Rules: []rbac.PolicyRule{},
+		},
+		&rbac.ClusterRoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-grafana-clusterrolebinding",
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-grafana",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     name + "-grafana-clusterrole",
+			},
+		},
+		&rbac.Role{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Role",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-grafana",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+			Rules: []rbac.PolicyRule{},
+		},
+		&rbac.RoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "RoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-grafana",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-grafana",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     name + "-grafana",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-grafana",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:     "service",
+						Protocol: "TCP",
+						Port:     80,
+						TargetPort: intstr.IntOrString{
+							IsInt:  true,
+							IntVal: 3000,
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+				},
+				Type: "ClusterIP",
+			},
+		},
+		&apps.Deployment{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Deployment",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-grafana",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "grafana",
+					"app.kubernetes.io/version":  "8.4.6",
+				},
+			},
+			Spec: apps.DeploymentSpec{
+				Replicas: ptr.Int32(1),
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/instance": name,
+						"app.kubernetes.io/name":     "grafana",
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/instance": name,
+							"app.kubernetes.io/name":     "grafana",
+						},
+						Annotations: map[string]string{
+							"checksum/config":                       "0d459da0ecfe2909ebeb017029b356713069455573df204a1247d314dc9f9b44",
+							"checksum/dashboards-json-config":       "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+							"checksum/sc-dashboard-provider-config": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+						},
+					},
+					Spec: core.PodSpec{
+						Volumes: []core.Volume{
+							{
+								Name: "config",
+								VolumeSource: core.VolumeSource{
+									ConfigMap: &core.ConfigMapVolumeSource{
+										LocalObjectReference: core.LocalObjectReference{
+											Name: name + "-grafana",
+										},
+									},
+								},
+							},
+							{
+								Name: "storage",
+								VolumeSource: core.VolumeSource{
+									PersistentVolumeClaim: &core.PersistentVolumeClaimVolumeSource{
+										ClaimName: name + "-grafana",
+									},
+								},
+							},
+						},
+						InitContainers: []core.Container{
+							{
+								Name:  "init-chown-data",
+								Image: "busybox:1.31.1",
+								Command: []string{
+									"chown",
+									"-R",
+									"472:472",
+									"/var/lib/grafana",
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "storage",
+										MountPath: "/var/lib/grafana",
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+								SecurityContext: &core.SecurityContext{
+									RunAsUser:    ptr.Int64(0),
+									RunAsNonRoot: ptr.Alloc(false),
+								},
+							},
+						},
+						Containers: []core.Container{
+							{
+								Name:  "grafana",
+								Image: "grafana/grafana:8.4.6",
+								Ports: []core.ContainerPort{
+									{
+										Name:          "service",
+										ContainerPort: 80,
+										Protocol:      "TCP",
+									},
+									{
+										Name:          "grafana",
+										ContainerPort: 3000,
+										Protocol:      "TCP",
+									},
+								},
+								Env: []core.EnvVar{
+									{
+										Name:  "GF_PATHS_DATA",
+										Value: "/var/lib/grafana/",
+									},
+									{
+										Name:  "GF_PATHS_LOGS",
+										Value: "/var/log/grafana",
+									},
+									{
+										Name:  "GF_PATHS_PLUGINS",
+										Value: "/var/lib/grafana/plugins",
+									},
+									{
+										Name:  "GF_PATHS_PROVISIONING",
+										Value: "/etc/grafana/provisioning",
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "config",
+										MountPath: "/etc/grafana/grafana.ini",
+										SubPath:   "grafana.ini",
+									},
+									{
+										Name:      "storage",
+										MountPath: "/var/lib/grafana",
+									},
+								},
+								LivenessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/api/health",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 3000,
+											},
+										},
+									},
+									InitialDelaySeconds: 60,
+									TimeoutSeconds:      30,
+									FailureThreshold:    10,
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/api/health",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 3000,
+											},
+										},
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+							},
+						},
+						ServiceAccountName:           name + "-grafana",
+						AutomountServiceAccountToken: ptr.Alloc(true),
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:  ptr.Int64(472),
+							RunAsGroup: ptr.Int64(472),
+							FSGroup:    ptr.Int64(472),
+						},
+						EnableServiceLinks: ptr.Alloc(true),
+					},
+				},
+				Strategy: apps.DeploymentStrategy{
+					Type: "RollingUpdate",
+				},
+				RevisionHistoryLimit: ptr.Int32(10),
+			},
+		},
+	}
+}

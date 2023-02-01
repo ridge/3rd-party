@@ -1,0 +1,115 @@
+// PUBLISH-CODE
+/*
+Copyright 2014 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This code is taken from github.com/kubernetes/apimachinery/pkg
+// and modified.
+
+package selector
+
+import (
+	"fmt"
+	"strconv"
+)
+
+// from package selection
+type operator string
+
+const (
+	doesNotExist operator = "!"
+	equals       operator = "="
+	doubleEquals operator = "=="
+	in           operator = "in"
+	notEquals    operator = "!="
+	notIn        operator = "notin"
+	exists       operator = "exists"
+	greaterThan  operator = "gt"
+	lessThan     operator = "lt"
+)
+
+// selectorMatchesLabels returns true if the Requirement matches the input Labels.
+// There is a match in the following cases:
+// (1) The operator is Exists and Labels has the Requirement's key.
+// (2) The operator is In, Labels has the Requirement's key and Labels'
+//
+//	value for that key is in Requirement's value set.
+//
+// (3) The operator is NotIn, Labels has the Requirement's key and
+//
+//	Labels' value for that key is not in Requirement's value set.
+//
+// (4) The operator is DoesNotExist or NotIn and Labels does not have the
+//
+//	Requirement's key.
+//
+// (5) The operator is GreaterThanOperator or LessThanOperator, and Labels has
+//
+//	the Requirement's key and the corresponding value satisfies mathematical inequality.
+//
+// from labels/Requirement.Matches
+func selectorMatchesLabels(key string, operator operator, strValues []string, labels map[string]string) (bool, error) {
+	value, ok := labels[key]
+
+	switch operator {
+	case in, equals, doubleEquals:
+		if !ok {
+			return false, nil
+		}
+		return hasValue(strValues, value), nil
+	case notIn, notEquals:
+		if !ok {
+			return true, nil
+		}
+		return !hasValue(strValues, value), nil
+	case exists:
+		return ok, nil
+	case doesNotExist:
+		return !ok, nil
+	case greaterThan, lessThan:
+		if !ok {
+			return false, nil
+		}
+		lsValue, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return false, nil
+		}
+
+		// There should be only one strValue in strValues, and can be converted to an integer.
+		if len(strValues) != 1 {
+			return false, nil
+		}
+
+		var rValue int64
+		for i := range strValues {
+			rValue, err = strconv.ParseInt(strValues[i], 10, 64)
+			if err != nil {
+				return false, nil
+			}
+		}
+		return (operator == greaterThan && lsValue > rValue) || (operator == lessThan && lsValue < rValue), nil
+	default:
+		return false, fmt.Errorf("operator %s not supported", operator)
+	}
+}
+
+func hasValue(strValues []string, value string) bool {
+	for i := range strValues {
+		if strValues[i] == value {
+			return true
+		}
+	}
+	return false
+}

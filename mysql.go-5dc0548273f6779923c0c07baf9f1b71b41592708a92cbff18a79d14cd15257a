@@ -1,0 +1,353 @@
+// PUBLISH-CODE
+/*
+Copyright © 2023 Bitnami
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This code is taken from github.com/bitnami/charts/main/bitnami/mysql
+// and extensively modified.
+
+package marketplaceapps
+
+import (
+	"fmt"
+
+	apps "go.tectonic.network/lib/k8s/imp/api/apps/v1"
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+	"go.tectonic.network/lib/k8s/intstr"
+	meta "go.tectonic.network/lib/k8s/meta/v1"
+	"go.tectonic.network/lib/ptr"
+)
+
+func mySQLInstructions(name, namespace string) string {
+	return fmt.Sprintf(`The app is ready to use when all pods returned by "kubectl get pods -n %s --selector %s" are in state "Running".
+MySQL is accessible through the service %s, in namespace %s. Root password is not required on first login.'`, namespace, "app.kubernetes.io/name=mysql,app.kubernetes.io/instance="+name, name+"-mysql", namespace)
+}
+
+const probeScript = "[ -n \"$(fuser 3306/tcp)\" ]\n"
+
+func mySQLConfig(name, namespace string) []interface{} {
+	return []interface{}{
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-mysql",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "mysql",
+				},
+			},
+			AutomountServiceAccountToken: ptr.Alloc(true),
+		},
+		&core.ConfigMap{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ConfigMap",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-mysql",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "primary",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "mysql",
+				},
+			},
+			Data: map[string]string{
+				"my.cnf": `[mysqld]
+default_authentication_plugin=mysql_native_password
+basedir=/opt/bitnami/mysql
+plugin_dir=/opt/bitnami/mysql/lib/plugin
+port=3306
+datadir=/bitnami/mysql/data
+tmpdir=/opt/bitnami/mysql/tmp
+max_allowed_packet=16M
+bind-address=0.0.0.0
+log-error=/opt/bitnami/mysql/logs/mysqld.log
+character-set-server=UTF8
+collation-server=utf8_general_ci
+slow_query_log=0
+slow_query_log_file=/opt/bitnami/mysql/logs/mysqld.log
+long_query_time=10.0
+
+[client]
+port=3306
+socket=/opt/bitnami/mysql/tmp/mysql.sock
+default-character-set=UTF8
+plugin_dir=/opt/bitnami/mysql/lib/plugin
+
+[manager]
+port=3306\
+socket=/opt/bitnami/mysql/tmp/mysql.sock
+pid-file=/opt/bitnami/mysql/tmp/mysqld.pid`,
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-mysql-headless",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "primary",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "mysql",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:       "mysql",
+						Port:       3306,
+						TargetPort: intstr.String("mysql"),
+					},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/component": "primary",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "mysql",
+				},
+				ClusterIP:                "None",
+				Type:                     "ClusterIP",
+				PublishNotReadyAddresses: true,
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-mysql",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "primary",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "mysql",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:       "mysql",
+						Protocol:   "TCP",
+						Port:       3306,
+						TargetPort: intstr.String("mysql"),
+					},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/component": "primary",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "mysql",
+				},
+				Type:            "ClusterIP",
+				SessionAffinity: "None",
+			},
+		},
+		&apps.StatefulSet{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "StatefulSet",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-mysql",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "primary",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "mysql",
+				},
+			},
+			Spec: apps.StatefulSetSpec{
+				Replicas: ptr.Int32(1),
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/component": "primary",
+						"app.kubernetes.io/instance":  name,
+						"app.kubernetes.io/name":      "mysql",
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/component": "primary",
+							"app.kubernetes.io/instance":  name,
+							"app.kubernetes.io/name":      "mysql",
+						},
+						Annotations: map[string]string{
+							"checksum/configuration": "df5cb09feea9e2dd4bc79a148f9405bcdfe90ebeac7dbc2d2f3ff34524f21024",
+						},
+					},
+					Spec: core.PodSpec{
+						Volumes: []core.Volume{
+							{
+								Name: "config",
+								VolumeSource: core.VolumeSource{
+									ConfigMap: &core.ConfigMapVolumeSource{
+										LocalObjectReference: core.LocalObjectReference{
+											Name: name + "-mysql",
+										},
+									},
+								},
+							},
+						},
+						Containers: []core.Container{
+							{
+								Name:  "mysql",
+								Image: "docker.io/bitnami/mysql:8.0.29-debian-11-r9",
+								Ports: []core.ContainerPort{
+									{
+										Name:          "mysql",
+										ContainerPort: 3306,
+									},
+								},
+								Env: []core.EnvVar{
+									{
+										Name:  "MYSQL_ROOT_PASSWORD", // must exist with a non-empty value or the container fails to start.
+										Value: "irrelevant",
+									},
+								},
+								Resources: core.ResourceRequirements{
+									Limits:   core.ResourceList{},
+									Requests: core.ResourceList{},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "data",
+										MountPath: "/bitnami/mysql",
+									},
+									{
+										Name:      "config",
+										MountPath: "/opt/bitnami/mysql/conf/my.cnf",
+										SubPath:   "my.cnf",
+									},
+								},
+								LivenessProbe: &core.Probe{
+									Handler: core.Handler{
+										Exec: &core.ExecAction{
+											Command: []string{
+												"/bin/bash",
+												"-ec",
+												probeScript,
+											},
+										},
+									},
+									InitialDelaySeconds: 5,
+									TimeoutSeconds:      1,
+									PeriodSeconds:       10,
+									SuccessThreshold:    1,
+									FailureThreshold:    3,
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										Exec: &core.ExecAction{
+											Command: []string{
+												"/bin/bash",
+												"-ec",
+												probeScript,
+											},
+										},
+									},
+									InitialDelaySeconds: 5,
+									TimeoutSeconds:      1,
+									PeriodSeconds:       10,
+									SuccessThreshold:    1,
+									FailureThreshold:    3,
+								},
+								StartupProbe: &core.Probe{
+									Handler: core.Handler{
+										Exec: &core.ExecAction{
+											Command: []string{
+												"/bin/bash",
+												"-ec",
+												probeScript,
+											},
+										},
+									},
+									InitialDelaySeconds: 15,
+									TimeoutSeconds:      1,
+									PeriodSeconds:       10,
+									SuccessThreshold:    1,
+									FailureThreshold:    10,
+								},
+								ImagePullPolicy: "IfNotPresent",
+								SecurityContext: &core.SecurityContext{
+									RunAsUser:    ptr.Int64(1001),
+									RunAsNonRoot: ptr.Alloc(true),
+								},
+							},
+						},
+						ServiceAccountName: name + "-mysql",
+						SecurityContext: &core.PodSecurityContext{
+							FSGroup: ptr.Int64(1001),
+						},
+						Affinity: &core.Affinity{
+							PodAntiAffinity: &core.PodAntiAffinity{
+								PreferredDuringSchedulingIgnoredDuringExecution: []core.WeightedPodAffinityTerm{
+									{
+										Weight: 1,
+										PodAffinityTerm: core.PodAffinityTerm{
+											LabelSelector: &meta.LabelSelector{
+												MatchLabels: map[string]string{
+													"app.kubernetes.io/instance": name,
+													"app.kubernetes.io/name":     "mysql",
+												},
+											},
+											Namespaces: []string{
+												namespace,
+											},
+											TopologyKey: "kubernetes.io/hostname",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				VolumeClaimTemplates: []core.PersistentVolumeClaim{
+					{
+						ObjectMeta: meta.ObjectMeta{
+							Name: "data",
+							Labels: map[string]string{
+								"app.kubernetes.io/component": "primary",
+								"app.kubernetes.io/instance":  name,
+								"app.kubernetes.io/name":      "mysql",
+							},
+						},
+						Spec: core.PersistentVolumeClaimSpec{
+							AccessModes: []core.PersistentVolumeAccessMode{
+								"ReadWriteOnce",
+							},
+							Resources: core.ResourceRequirements{
+								Requests: core.ResourceList{
+									"storage": "8Gi",
+								},
+							},
+						},
+					},
+				},
+				ServiceName: name + "-mysql",
+				UpdateStrategy: apps.StatefulSetUpdateStrategy{
+					Type: "RollingUpdate",
+				},
+			},
+		},
+	}
+}

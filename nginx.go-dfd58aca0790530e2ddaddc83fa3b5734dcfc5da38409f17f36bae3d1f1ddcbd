@@ -1,0 +1,995 @@
+// PUBLISH-CODE
+/*
+Copyright 2022 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This code is taken from github.com/kubernetes/ingress-nginx/main/charts/ingress-nginx
+// and extensively modified.
+
+package marketplaceapps
+
+import (
+	"fmt"
+
+	admissionregistration "go.tectonic.network/lib/k8s/imp/api/admissionregistration/v1"
+	apps "go.tectonic.network/lib/k8s/imp/api/apps/v1"
+	batch "go.tectonic.network/lib/k8s/imp/api/batch/v1"
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+	networking "go.tectonic.network/lib/k8s/imp/api/networking/v1"
+	rbac "go.tectonic.network/lib/k8s/imp/api/rbac/v1"
+	"go.tectonic.network/lib/k8s/intstr"
+	meta "go.tectonic.network/lib/k8s/meta/v1"
+	"go.tectonic.network/lib/ptr"
+)
+
+var nginxInstructions = func(name, namespace string) string {
+	selector := fmt.Sprintf("app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/instance=%s", name)
+	return fmt.Sprintf(`The app is ready to use when all pods returned by "kubectl get pods -n %s --selector %s" are either state "Running" or "Completed".
+Refer to the Kubernetes documentation on how to create ingresses: https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/.`, namespace, selector)
+}
+
+var nginxConfig = func(name, namespace string) []any {
+	return []any{
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			AutomountServiceAccountToken: ptr.Alloc(true),
+		},
+		&core.ConfigMap{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ConfigMap",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-controller",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			Data: map[string]string{
+				"allow-snippet-annotations": "true",
+			},
+		},
+		&rbac.ClusterRole{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRole",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-ingress-nginx",
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "ingress-nginx",
+					"app.kubernetes.io/part-of":  "ingress-nginx",
+					"app.kubernetes.io/version":  "1.2.0",
+				},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs: []string{
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"configmaps",
+						"endpoints",
+						"nodes",
+						"pods",
+						"secrets",
+						"namespaces",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"nodes",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"services",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"ingresses",
+					},
+				},
+				{
+					Verbs: []string{
+						"create",
+						"patch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"events",
+					},
+				},
+				{
+					Verbs: []string{
+						"update",
+					},
+					APIGroups: []string{
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"ingresses/status",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"ingressclasses",
+					},
+				},
+			},
+		},
+		&rbac.ClusterRoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-ingress-nginx",
+				Labels: map[string]string{
+					"app.kubernetes.io/instance": name,
+					"app.kubernetes.io/name":     "ingress-nginx",
+					"app.kubernetes.io/part-of":  "ingress-nginx",
+					"app.kubernetes.io/version":  "1.2.0",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-ingress-nginx",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     name + "-ingress-nginx",
+			},
+		},
+		&rbac.Role{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Role",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs: []string{
+						"get",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"namespaces",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"configmaps",
+						"pods",
+						"secrets",
+						"endpoints",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"services",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"ingresses",
+					},
+				},
+				{
+					Verbs: []string{
+						"update",
+					},
+					APIGroups: []string{
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"ingresses/status",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"list",
+						"watch",
+					},
+					APIGroups: []string{
+						"networking.k8s.io",
+					},
+					Resources: []string{
+						"ingressclasses",
+					},
+				},
+				{
+					Verbs: []string{
+						"get",
+						"update",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"configmaps",
+					},
+					ResourceNames: []string{
+						"ingress-controller-leader",
+					},
+				},
+				{
+					Verbs: []string{
+						"create",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"configmaps",
+					},
+				},
+				{
+					Verbs: []string{
+						"create",
+						"patch",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"events",
+					},
+				},
+			},
+		},
+		&rbac.RoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "RoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-ingress-nginx",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     name + "-ingress-nginx",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-controller-admission",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:        "https-webhook",
+						AppProtocol: ptr.Alloc("https"),
+						Port:        443,
+						TargetPort: intstr.IntOrString{
+							StrVal: "webhook",
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+				},
+				Type: "ClusterIP",
+			},
+		},
+		&core.Service{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Service",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-controller",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			Spec: core.ServiceSpec{
+				Ports: []core.ServicePort{
+					{
+						Name:        "http",
+						Protocol:    "TCP",
+						AppProtocol: ptr.Alloc("http"),
+						Port:        80,
+						TargetPort: intstr.IntOrString{
+							StrVal: "http",
+						},
+					},
+					{
+						Name:        "https",
+						Protocol:    "TCP",
+						AppProtocol: ptr.Alloc("https"),
+						Port:        443,
+						TargetPort: intstr.IntOrString{
+							StrVal: "https",
+						},
+					},
+				},
+				Selector: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+				},
+				Type: "LoadBalancer",
+			},
+		},
+		&apps.Deployment{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Deployment",
+				APIVersion: "apps/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-controller",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			Spec: apps.DeploymentSpec{
+				Replicas: ptr.Int32(1),
+				Selector: &meta.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/component": "controller",
+						"app.kubernetes.io/instance":  name,
+						"app.kubernetes.io/name":      "ingress-nginx",
+					},
+				},
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Labels: map[string]string{
+							"app.kubernetes.io/component": "controller",
+							"app.kubernetes.io/instance":  name,
+							"app.kubernetes.io/name":      "ingress-nginx",
+						},
+					},
+					Spec: core.PodSpec{
+						Volumes: []core.Volume{
+							{
+								Name: "webhook-cert",
+								VolumeSource: core.VolumeSource{
+									Secret: &core.SecretVolumeSource{
+										SecretName: name + "-ingress-nginx-admission",
+									},
+								},
+							},
+						},
+						Containers: []core.Container{
+							{
+								Name:  "controller",
+								Image: "k8s.gcr.io/ingress-nginx/controller:v1.2.0@sha256:d8196e3bc1e72547c5dec66d6556c0ff92a23f6d0919b206be170bc90d5f9185",
+								Args: []string{
+									"/nginx-ingress-controller",
+									"--publish-service=$(POD_NAMESPACE)/" + name + "-ingress-nginx-controller",
+									"--election-id=ingress-controller-leader",
+									"--controller-class=k8s.io/ingress-nginx",
+									"--ingress-class=nginx",
+									"--configmap=$(POD_NAMESPACE)/" + name + "-ingress-nginx-controller",
+									"--validating-webhook=:8443",
+									"--validating-webhook-certificate=/usr/local/certificates/cert",
+									"--validating-webhook-key=/usr/local/certificates/key",
+								},
+								Ports: []core.ContainerPort{
+									{
+										Name:          "http",
+										ContainerPort: 80,
+										Protocol:      "TCP",
+									},
+									{
+										Name:          "https",
+										ContainerPort: 443,
+										Protocol:      "TCP",
+									},
+									{
+										Name:          "webhook",
+										ContainerPort: 8443,
+										Protocol:      "TCP",
+									},
+								},
+								Env: []core.EnvVar{
+									{
+										Name: "POD_NAME",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												FieldPath: "metadata.name",
+											},
+										},
+									},
+									{
+										Name: "POD_NAMESPACE",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												FieldPath: "metadata.namespace",
+											},
+										},
+									},
+									{
+										Name:  "LD_PRELOAD",
+										Value: "/usr/local/lib/libmimalloc.so",
+									},
+								},
+								Resources: core.ResourceRequirements{
+									Requests: core.ResourceList{
+										"cpu":    "100m",
+										"memory": "90Mi",
+									},
+								},
+								VolumeMounts: []core.VolumeMount{
+									{
+										Name:      "webhook-cert",
+										ReadOnly:  true,
+										MountPath: "/usr/local/certificates/",
+									},
+								},
+								LivenessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/healthz",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 10254,
+											},
+											Scheme: "HTTP",
+										},
+									},
+									InitialDelaySeconds: 10,
+									TimeoutSeconds:      1,
+									PeriodSeconds:       10,
+									SuccessThreshold:    1,
+									FailureThreshold:    5,
+								},
+								ReadinessProbe: &core.Probe{
+									Handler: core.Handler{
+										HTTPGet: &core.HTTPGetAction{
+											Path: "/healthz",
+											Port: intstr.IntOrString{
+												IsInt:  true,
+												IntVal: 10254,
+											},
+											Scheme: "HTTP",
+										},
+									},
+									InitialDelaySeconds: 10,
+									TimeoutSeconds:      1,
+									PeriodSeconds:       10,
+									SuccessThreshold:    1,
+									FailureThreshold:    3,
+								},
+								Lifecycle: &core.Lifecycle{
+									PreStop: &core.Handler{
+										Exec: &core.ExecAction{
+											Command: []string{
+												"/wait-shutdown",
+											},
+										},
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+								SecurityContext: &core.SecurityContext{
+									Capabilities: &core.Capabilities{
+										Add: []core.Capability{
+											"NET_BIND_SERVICE",
+										},
+										Drop: []core.Capability{
+											"ALL",
+										},
+									},
+									RunAsUser:                ptr.Int64(101),
+									AllowPrivilegeEscalation: ptr.Alloc(true),
+								},
+							},
+						},
+						TerminationGracePeriodSeconds: ptr.Int64(300),
+						DNSPolicy:                     "ClusterFirst",
+						NodeSelector: map[string]string{
+							"kubernetes.io/os": "linux",
+						},
+						ServiceAccountName: name + "-ingress-nginx",
+					},
+				},
+				RevisionHistoryLimit: ptr.Int32(10),
+			},
+		},
+		&networking.IngressClass{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "IngressClass",
+				APIVersion: "networking.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: "nginx",
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "controller",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			Spec: networking.IngressClassSpec{
+				Controller: "k8s.io/ingress-nginx",
+			},
+		},
+		&admissionregistration.ValidatingWebhookConfiguration{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ValidatingWebhookConfiguration",
+				APIVersion: "admissionregistration.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-ingress-nginx-admission",
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "admission-webhook",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+			},
+			Webhooks: []admissionregistration.ValidatingWebhook{
+				{
+					Name: "validate.nginx.ingress.kubernetes.io",
+					ClientConfig: admissionregistration.WebhookClientConfig{
+						Service: &admissionregistration.ServiceReference{
+							Namespace: namespace,
+							Name:      name + "-ingress-nginx-controller-admission",
+							Path:      ptr.Alloc("/networking/v1/ingresses"),
+						},
+					},
+					Rules: []admissionregistration.RuleWithOperations{
+						{
+							Operations: []admissionregistration.OperationType{
+								"CREATE",
+								"UPDATE",
+							},
+							Rule: admissionregistration.Rule{
+								APIGroups: []string{
+									"networking.k8s.io",
+								},
+								APIVersions: []string{
+									"v1",
+								},
+								Resources: []string{
+									"ingresses",
+								},
+							},
+						},
+					},
+					FailurePolicy: &failurePolicyFail,
+					MatchPolicy:   &matchPolicyEquivalent,
+					SideEffects:   &sideEffectNone,
+					AdmissionReviewVersions: []string{
+						"v1",
+					},
+				},
+			},
+		},
+		&core.ServiceAccount{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ServiceAccount",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-admission",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "admission-webhook",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+				Annotations: map[string]string{},
+			},
+		},
+		&rbac.ClusterRole{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRole",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-ingress-nginx-admission",
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "admission-webhook",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+				Annotations: map[string]string{},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs: []string{
+						"get",
+						"update",
+					},
+					APIGroups: []string{
+						"admissionregistration.k8s.io",
+					},
+					Resources: []string{
+						"validatingwebhookconfigurations",
+					},
+				},
+			},
+		},
+		&rbac.ClusterRoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "ClusterRoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: name + "-ingress-nginx-admission",
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "admission-webhook",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+				Annotations: map[string]string{},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-ingress-nginx-admission",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     name + "-ingress-nginx-admission",
+			},
+		},
+		&rbac.Role{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Role",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-admission",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "admission-webhook",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+				Annotations: map[string]string{},
+			},
+			Rules: []rbac.PolicyRule{
+				{
+					Verbs: []string{
+						"get",
+						"create",
+					},
+					APIGroups: []string{
+						"",
+					},
+					Resources: []string{
+						"secrets",
+					},
+				},
+			},
+		},
+		&rbac.RoleBinding{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "RoleBinding",
+				APIVersion: "rbac.authorization.k8s.io/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-admission",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "admission-webhook",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+				Annotations: map[string]string{},
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      name + "-ingress-nginx-admission",
+					Namespace: namespace,
+				},
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     name + "-ingress-nginx-admission",
+			},
+		},
+		&batch.Job{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Job",
+				APIVersion: "batch/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-admission-create",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "admission-webhook",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+				Annotations: map[string]string{},
+			},
+			Spec: batch.JobSpec{
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Name: name + "-ingress-nginx-admission-create",
+						Labels: map[string]string{
+							"app.kubernetes.io/component": "admission-webhook",
+							"app.kubernetes.io/instance":  name,
+							"app.kubernetes.io/name":      "ingress-nginx",
+							"app.kubernetes.io/part-of":   "ingress-nginx",
+							"app.kubernetes.io/version":   "1.2.0",
+						},
+					},
+					Spec: core.PodSpec{
+						Containers: []core.Container{
+							{
+								Name:  "create",
+								Image: "k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1@sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660",
+								Args: []string{
+									"create",
+									"--host=" + name + "-ingress-nginx-controller-admission," + name + "-ingress-nginx-controller-admission.$(POD_NAMESPACE).svc",
+									"--namespace=$(POD_NAMESPACE)",
+									"--secret-name=" + name + "-ingress-nginx-admission",
+								},
+								Env: []core.EnvVar{
+									{
+										Name: "POD_NAMESPACE",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												FieldPath: "metadata.namespace",
+											},
+										},
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+								SecurityContext: &core.SecurityContext{
+									AllowPrivilegeEscalation: ptr.Alloc(false),
+								},
+							},
+						},
+						RestartPolicy: "OnFailure",
+						NodeSelector: map[string]string{
+							"kubernetes.io/os": "linux",
+						},
+						ServiceAccountName: name + "-ingress-nginx-admission",
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:    ptr.Int64(2000),
+							RunAsNonRoot: ptr.Alloc(true),
+							FSGroup:      ptr.Int64(2000),
+						},
+					},
+				},
+			},
+		},
+		&batch.Job{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Job",
+				APIVersion: "batch/v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name:      name + "-ingress-nginx-admission-patch",
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "admission-webhook",
+					"app.kubernetes.io/instance":  name,
+					"app.kubernetes.io/name":      "ingress-nginx",
+					"app.kubernetes.io/part-of":   "ingress-nginx",
+					"app.kubernetes.io/version":   "1.2.0",
+				},
+				Annotations: map[string]string{},
+			},
+			Spec: batch.JobSpec{
+				Template: core.PodTemplateSpec{
+					ObjectMeta: meta.ObjectMeta{
+						Name: name + "-ingress-nginx-admission-patch",
+						Labels: map[string]string{
+							"app.kubernetes.io/component": "admission-webhook",
+							"app.kubernetes.io/instance":  name,
+							"app.kubernetes.io/name":      "ingress-nginx",
+							"app.kubernetes.io/part-of":   "ingress-nginx",
+							"app.kubernetes.io/version":   "1.2.0",
+						},
+					},
+					Spec: core.PodSpec{
+						Containers: []core.Container{
+							{
+								Name:  "patch",
+								Image: "k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1@sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660",
+								Args: []string{
+									"patch",
+									"--webhook-name=" + name + "-ingress-nginx-admission",
+									"--namespace=$(POD_NAMESPACE)",
+									"--patch-mutating=false",
+									"--secret-name=" + name + "-ingress-nginx-admission",
+									"--patch-failure-policy=Fail",
+								},
+								Env: []core.EnvVar{
+									{
+										Name: "POD_NAMESPACE",
+										ValueFrom: &core.EnvVarSource{
+											FieldRef: &core.ObjectFieldSelector{
+												FieldPath: "metadata.namespace",
+											},
+										},
+									},
+								},
+								ImagePullPolicy: "IfNotPresent",
+								SecurityContext: &core.SecurityContext{
+									AllowPrivilegeEscalation: ptr.Alloc(false),
+								},
+							},
+						},
+						RestartPolicy: "OnFailure",
+						NodeSelector: map[string]string{
+							"kubernetes.io/os": "linux",
+						},
+						ServiceAccountName: name + "-ingress-nginx-admission",
+						SecurityContext: &core.PodSecurityContext{
+							RunAsUser:    ptr.Int64(2000),
+							RunAsNonRoot: ptr.Alloc(true),
+							FSGroup:      ptr.Int64(2000),
+						},
+					},
+				},
+			},
+		},
+	}
+}

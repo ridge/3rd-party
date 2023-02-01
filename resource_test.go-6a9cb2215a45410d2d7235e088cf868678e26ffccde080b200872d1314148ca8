@@ -1,0 +1,51 @@
+// PUBLISH-CODE
+/*
+Copyright 2014 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// This code is taken from github.com/kubernetes/apimachinery/pkg/api/resource/quantity_example_test.go
+// and modified.
+
+package quantity
+
+import (
+	"testing"
+
+	core "go.tectonic.network/lib/k8s/imp/api/core/v1"
+)
+
+func TestResourceIntValue(t *testing.T) {
+	table := []struct {
+		input        string
+		resourceName core.ResourceName
+		expect       int64
+	}{
+		{"5Gi", core.ResourceMemory, 5368709120},
+		{"5G", core.ResourceEphemeralStorage, 5000000000},
+		{"5300m", core.ResourceCPU, 5300},
+		{"5.4", core.ResourceCPU, 5400},
+	}
+
+	for _, item := range table {
+		got, err := ResourceIntValue(item.resourceName, item.input)
+		if err != nil {
+			t.Errorf("%v: unexpected error: %v", item.input, err)
+			continue
+		}
+		if item.expect != got {
+			t.Errorf("%v: expected %d, got %d", item.input, item.expect, got)
+		}
+	}
+}
